@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and captured API output
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+auth.json
+usage.json
+credentials.json
+
+# ESP32 / ESP-IDF / PlatformIO / Arduino
+esp32/build/
+esp32/sim/build/
+esp32/firmware/build/
+esp32/firmware/sdkconfig
+esp32/firmware/sdkconfig.old
+esp32/firmware/dependencies.lock
+esp32/firmware/managed_components/
+esp32/.pio/
+esp32/.pioenvs/
+esp32/.piolibdeps/
+sdkconfig.old
+dependencies.lock
+managed_components/
+build/
+*.elf
+*.bin
+*.map
+*.hex
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
