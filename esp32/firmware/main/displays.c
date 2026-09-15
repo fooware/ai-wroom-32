@@ -23,10 +23,6 @@ static const char *TAG = "displays";
 #define LCD_HOST SPI3_HOST
 #define LVGL_BUF_LINES 40
 
-/* GC9A01 51h/53h have no effect on this 7-pin wiring (BLK tied to 3.3 V). */
-#define LCD_CTRL_DISPLAY 0x2C /* BCTRL | BL on */
-#define LCD_BRIGHTNESS 0x66   /* ~40% of 0xFF */
-
 static esp_err_t add_panel(gpio_num_t cs, gpio_num_t rst, const char *name, lv_display_t **out) {
   esp_lcd_panel_io_handle_t io = NULL;
   const esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(cs, PIN_DC, NULL, NULL);
@@ -44,11 +40,6 @@ static esp_err_t add_panel(gpio_num_t cs, gpio_num_t rst, const char *name, lv_d
   ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel), TAG, "init %s", name);
   ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(panel, true), TAG, "invert %s", name);
   ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(panel, true), TAG, "on %s", name);
-
-  const uint8_t ctrl = LCD_CTRL_DISPLAY;
-  const uint8_t brightness = LCD_BRIGHTNESS;
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, 0x53, &ctrl, 1), TAG, "ctrl display %s", name);
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, 0x51, &brightness, 1), TAG, "brightness %s", name);
 
   const lvgl_port_display_cfg_t disp_cfg = {
       .io_handle = io,

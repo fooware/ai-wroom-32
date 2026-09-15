@@ -22,7 +22,7 @@ Pinout matches `rxh-wroom-32` `dual-display/src/displays.hpp`:
 
 There is no backlight GPIO on this revision. The GC9A01 modules are wired as seven-pin panels (RST, CS, DC, SDA, SCL, GND, VCC). The LED is tied to 3.3 V, so it is always on.
 
-GC9A01 commands `53h` (CTRL display) and `51h` (write brightness) were sent after panel init. They did not change intensity on this hardware. Do not rely on those registers for dimming.
+GC9A01 commands `53h` (CTRL display) and `51h` (write brightness) have no effect on this hardware. Do not rely on those registers for dimming.
 
 ### Final hardware revision (backlight)
 
@@ -41,7 +41,7 @@ Recommended:
 - If PWM on BLK does not dim (some boards only hard-switch, or BLK is a logic input without a transistor), add a low-side N-MOSFET (or the Waveshare-style BJT) between LED cathode / BLK transistor and GND, PWM the gate, and keep the LED current off the GPIO.
 - Size the 3.3 V LED supply for **two** round panels at full white. PWM only reduces average current; the regulator still has to handle peaks.
 - After reset, default BLK so the screens are visible (PWM at a known duty, not 0%) until firmware sets the user brightness.
-- Firmware should stop treating `51h`/`53h` as the brightness path once GPIO PWM is in place.
+- Dim with GPIO PWM on BLK; do not use `51h`/`53h`.
 
 Unused WROOM GPIOs that are already on the same header, if BLK must be split per panel: **16** and **17**.
 
