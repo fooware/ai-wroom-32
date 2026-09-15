@@ -3,6 +3,8 @@ project(ai_wroom_32_sim C)
 
 set(CMAKE_C_STANDARD 11)
 
+option(SIM_START_METERS "Boot the simulator on the meter faces instead of attraction" OFF)
+
 include(FetchContent)
 FetchContent_Declare(
   lvgl
@@ -39,4 +41,7 @@ target_include_directories(sim PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../ui/include
 )
 target_compile_definitions(sim PRIVATE LV_CONF_INCLUDE_SIMPLE)
+if(SIM_START_METERS)
+  target_compile_definitions(sim PRIVATE SIM_START_METERS=1)
+endif()
 target_link_libraries(sim PRIVATE lvgl::lvgl)

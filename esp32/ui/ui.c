@@ -13,7 +13,15 @@
 #define ARC_TOP_GAP_DEG 9
 #define ARC_WIDTH 24
 #define CENTER_WIDTH 150
-#define BAR_LABEL_X 30
+
+static const ui_bar_label_pad_t CODEX_BAR_LABEL_PAD = {
+    UI_CODEX_LEFT_BAR_LABEL_X,
+    UI_CODEX_RIGHT_BAR_LABEL_X,
+};
+static const ui_bar_label_pad_t CURSOR_BAR_LABEL_PAD = {
+    UI_CURSOR_LEFT_BAR_LABEL_X,
+    UI_CURSOR_RIGHT_BAR_LABEL_X,
+};
 
 static int clamp_pct(int percent) {
   if (percent < 0) {
@@ -43,7 +51,7 @@ static lv_obj_t *make_label(lv_obj_t *parent, lv_color_t color, const char *text
   return lbl;
 }
 
-static void create_side_arc(lv_obj_t *parent, bool left_side, lv_color_t accent, ui_side_bar_t *out) {
+static void create_side_arc(lv_obj_t *parent, int32_t label_x, lv_color_t accent, ui_side_bar_t *out) {
   lv_obj_t *arc = lv_arc_create(parent);
   lv_obj_set_size(arc, 228, 228);
   lv_obj_center(arc);
@@ -57,7 +65,7 @@ static void create_side_arc(lv_obj_t *parent, bool left_side, lv_color_t accent,
   lv_obj_set_style_arc_color(arc, COLOR_TRACK, LV_PART_MAIN);
   lv_obj_set_style_arc_color(arc, accent, LV_PART_INDICATOR);
   /* 0% at the bottom, 100% near the top; remaining drains toward empty. */
-  if (left_side) {
+  if (label_x < 0) {
     lv_arc_set_bg_angles(arc, ARC_TOP_DEG - ARC_TOP_GAP_DEG - ARC_SPAN_DEG, ARC_TOP_DEG - ARC_TOP_GAP_DEG);
     lv_arc_set_mode(arc, LV_ARC_MODE_NORMAL);
   } else {
@@ -73,11 +81,10 @@ static void create_side_arc(lv_obj_t *parent, bool left_side, lv_color_t accent,
   lv_obj_set_style_text_color(percent, lv_color_white(), 0);
   lv_obj_set_style_text_font(percent, &lv_font_montserrat_16, 0);
   /* Both labels sit below the open end of their own arc. */
-  const int32_t x_offset = left_side ? -BAR_LABEL_X : BAR_LABEL_X;
   lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_align(percent, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(name, LV_ALIGN_BOTTOM_MID, x_offset, -36);
-  lv_obj_align(percent, LV_ALIGN_BOTTOM_MID, x_offset, -16);
+  lv_obj_align(name, LV_ALIGN_BOTTOM_MID, label_x, -36);
+  lv_obj_align(percent, LV_ALIGN_BOTTOM_MID, label_x, -16);
 
   out->arc = arc;
   out->name = name;
@@ -117,13 +124,14 @@ static void create_center(lv_obj_t *parent, ui_face_t *face) {
   lv_obj_set_width(face->line3, CENTER_WIDTH);
 }
 
-static void create_face(lv_display_t *disp, lv_color_t accent, ui_face_t *out) {
+static void create_face(lv_display_t *disp, lv_color_t accent, const ui_bar_label_pad_t *label_pad,
+                        ui_face_t *out) {
   lv_display_set_default(disp);
   lv_obj_t *scr = lv_display_get_screen_active(disp);
   style_screen(scr);
   out->root = scr;
-  create_side_arc(scr, true, accent, &out->left_bar);
-  create_side_arc(scr, false, accent, &out->right_bar);
+  create_side_arc(scr, -label_pad->left_x, accent, &out->left_bar);
+  create_side_arc(scr, label_pad->right_x, accent, &out->right_bar);
   create_center(scr, out);
 }
 
@@ -131,14 +139,14 @@ void ui_codex_apply(ui_face_t *face, const ui_codex_data_t *data) {
   set_side_bar(&face->left_bar, "5h", data->primary_left_pct);
   set_side_bar(&face->right_bar, "1w", data->weekly_left_pct);
   lv_label_set_text(face->title, "Codex");
-  lv_label_set_text(face->line1, data->primary_until);
-  lv_label_set_text(face->line2, data->weekly_reset);
-  lv_label_set_text(face->line3, data->free_resets);
+  lv_label_set_text(face->line1, data->free_resets);
+  lv_label_set_text(face->line2, data->primary_until);
+  lv_label_set_text(face->line3, data->weekly_reset);
 }
 
 void ui_cursor_apply(ui_face_t *face, const ui_cursor_data_t *data) {
-  set_side_bar(&face->left_bar, "Auto", data->auto_left_pct);
-  set_side_bar(&face->right_bar, "API", data->named_left_pct);
+  set_side_bar(&face->left_bar, "Cheap", data->auto_left_pct);
+  set_side_bar(&face->right_bar, "Good", data->named_left_pct);
   lv_label_set_text(face->title, "Cursor");
   lv_label_set_text(face->line1, data->on_demand_used);
   lv_label_set_text(face->line2, data->team_on_demand_left);
@@ -146,6 +154,6 @@ void ui_cursor_apply(ui_face_t *face, const ui_cursor_data_t *data) {
 }
 
 void ui_demo_create(lv_display_t *codex_disp, lv_display_t *cursor_disp, ui_demo_t *out) {
-  create_face(codex_disp, COLOR_CODEX, &out->codex);
-  create_face(cursor_disp, COLOR_CURSOR, &out->cursor);
+  create_face(codex_disp, COLOR_CODEX, &CODEX_BAR_LABEL_PAD, &out->codex);
+  create_face(cursor_disp, COLOR_CURSOR, &CURSOR_BAR_LABEL_PAD, &out->cursor);
 }

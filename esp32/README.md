@@ -83,7 +83,19 @@ cmake --build esp32/sim/build
 ./esp32/sim/build/sim
 ```
 
-Two windows: Cursor (left) and Codex (right).
+Two windows: Codex (left) and Cursor (right). Exit with Ctrl+C in the terminal.
+
+To iterate on the meter faces (arcs and center text) without provisioning the
+device, either set `SIM_START_METERS` to `1` at the top of `esp32/sim/main.c`,
+or configure once with:
+
+```sh
+cmake -S esp32/sim -B esp32/sim/build -DSIM_START_METERS=ON
+cmake --build esp32/sim/build
+```
+
+Edit the sample values in `show_meter_preview()` in `main.c`, or change the
+layout in `esp32/ui/ui.c`, rebuild, and relaunch.
 
 ## Firmware
 

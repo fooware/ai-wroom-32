@@ -10,6 +10,28 @@ extern "C" {
 #define UI_VRES 240
 #define UI_STAR_COUNT 7
 
+/*
+ * Horizontal offset of each arc's name/percent labels from screen center.
+ * Positive moves the label toward the outer edge of its arc.
+ */
+#ifndef UI_CODEX_LEFT_BAR_LABEL_X
+#define UI_CODEX_LEFT_BAR_LABEL_X 40
+#endif
+#ifndef UI_CODEX_RIGHT_BAR_LABEL_X
+#define UI_CODEX_RIGHT_BAR_LABEL_X 40
+#endif
+#ifndef UI_CURSOR_LEFT_BAR_LABEL_X
+#define UI_CURSOR_LEFT_BAR_LABEL_X 28
+#endif
+#ifndef UI_CURSOR_RIGHT_BAR_LABEL_X
+#define UI_CURSOR_RIGHT_BAR_LABEL_X 31
+#endif
+
+typedef struct {
+  int16_t left_x;
+  int16_t right_x;
+} ui_bar_label_pad_t;
+
 typedef struct {
   lv_obj_t *dot;
   int32_t x_q8;

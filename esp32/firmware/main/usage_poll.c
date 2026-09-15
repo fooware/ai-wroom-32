@@ -211,7 +211,7 @@ static bool fill_codex(cJSON *root, ui_codex_data_t *out) {
   } else {
     snprintf(codex_week, sizeof(codex_week), "reset n/a");
   }
-  snprintf(codex_resets, sizeof(codex_resets), "%d resets",
+  snprintf(codex_resets, sizeof(codex_resets), "%d free resets",
            cJSON_IsNumber(resets) ? resets->valueint : 0);
   out->primary_until = codex_until;
   out->weekly_reset = codex_week;
