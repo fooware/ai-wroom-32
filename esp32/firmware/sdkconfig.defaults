@@ -21,3 +21,7 @@ CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
 
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+# chatgpt.com serves GTS Root R4 cross-signed by GlobalSign Root CA.
+# The common bundle has self-signed GTS Root R4, so the handshake fails
+# unless the bundle can substitute that matching root during verify.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
