@@ -16,7 +16,8 @@
 
 #define CURSOR_USAGE_URL "https://cursor.com/api/usage-summary"
 #define CODEX_USAGE_URL "https://chatgpt.com/backend-api/wham/usage"
-#define POLL_PERIOD_MS 30000
+/* Idle wait after each fetch (or until a credential push wakes the task). */
+#define POLL_PERIOD_MS 15000
 #define INITIAL_RESPONSE_BYTES 4096
 #define MAX_RESPONSE_BYTES 24576
 

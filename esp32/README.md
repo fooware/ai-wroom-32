@@ -111,6 +111,12 @@ idf.py -p /dev/cu.usbserial-* flash monitor
 
 The first build downloads LVGL, `esp_lvgl_port`, and `esp_lcd_gc9a01` into `managed_components/` (gitignored).
 
+`idf.py monitor` is the serial console after flash. To print those logs without activating IDF:
+
+```sh
+python3 computer/serial_log.py
+```
+
 ## Credential intake
 
 Once connected, the device serves `POST /api/credentials` on the displayed IP.
@@ -124,6 +130,7 @@ The development endpoint is plain HTTP, so `computer/usage.py` requires
 ## Usage meters
 
 After a successful credential POST, the device fetches Cursor and Codex usage
-over HTTPS about every 30 seconds and draws the dual meter faces. Keep the
-computer pushing with `watch --always` so the one-hour RAM lease does not
-expire. When the lease ends, tokens are wiped and attraction returns.
+over HTTPS, waiting 15 seconds after each attempt, and draws the dual meter
+faces. Keep the computer pushing with `watch --always` so the one-hour RAM
+lease does not expire. When the lease ends, tokens are wiped and attraction
+returns.

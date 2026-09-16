@@ -10,7 +10,7 @@ The firmware, the computer-side tool, and this documentation are provided **as i
 
 ## Overview
 
-Firmware and a dual-screen LVGL demo live in [`esp32/`](esp32/). Hardware pinout and the backlight change for the next board revision are in [`esp32/README.md`](esp32/README.md). The computer-side usage tool is `computer/usage.py`.
+Firmware and a dual-screen LVGL demo live in [`esp32/`](esp32/). Hardware pinout and the backlight change for the next board revision are in [`esp32/README.md`](esp32/README.md). The computer-side usage tool is `computer/usage.py`. USB serial logs: `computer/serial_log.py`.
 
 `computer/usage.py` is the computer-side example. It shows how to:
 
@@ -80,6 +80,14 @@ python3 computer/usage.py wifi-reset --serial /dev/cu.SLAB_USBtoUART
 ```
 
 Needs `esptool`. After reset, join `AIOM-…` and use ESP SoftAP Prov with the PIN as proof of possession.
+
+Print firmware logs while the board is on USB (auto-detects the adapter):
+
+```sh
+python3 computer/serial_log.py
+```
+
+Opening the port may reset the chip on a typical USB-UART adapter. `python3 computer/serial_log.py --help` lists `--port`, `--baud`, `--timestamps`, and `--reset`.
 
 `python3 computer/usage.py --help` lists subcommands and flags.
 
@@ -220,8 +228,9 @@ The endpoint requires the boot-scoped pairing PIN in `Authorization: Bearer`.
 Three incorrect PINs lock credential intake until reboot. A valid request
 stores the service credentials in RAM and returns
 `{"ok":true,"lease_seconds":3600}`. The device then HTTPS-fetches Cursor and
-Codex usage about every 30 seconds and switches to the meter faces. If no
-refresh arrives for an hour, it drops the RAM tokens and returns to attraction.
+Codex usage, waiting 15 seconds after each attempt, and switches to the meter
+faces. If no refresh arrives for an hour, it drops the RAM tokens and returns
+to attraction.
 
 Plain HTTP would expose the Cursor session and Codex bearer token on the LAN.
 The tool therefore requires the explicit `--allow-insecure-http` flag.
