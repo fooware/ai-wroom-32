@@ -1,4 +1,4 @@
-# Dual display ESP32 hardware meter for Cursor and Codex usage
+# ESP32 hardware meter for AI subscription usage
 
 ## Disclaimer
 
@@ -29,8 +29,8 @@ Requirements:
 
 - macOS (the default Cursor database path is macOS-specific)
 - Python 3.11 or newer
-- Signed-in Cursor desktop app and Codex client
-- Network access to `cursor.com` and `chatgpt.com`
+- Signed-in clients for the providers you select
+- Network access to the selected providers (`cursor.com`, `chatgpt.com`, `api.anthropic.com`)
 
 JSON dump of the normalized payloads:
 
@@ -268,3 +268,53 @@ Placeholders are not usable credentials.
 - JWT payload decoding is used only for metadata (`sub`, `exp`), not signature
   verification.
 - Do not commit captured responses. They can include account identifiers.
+
+## Selectable providers and Claude
+
+`fetch`, `print`, `push`, and `watch` accept `--providers codex,cursor,claude`.
+The default remains `codex,cursor`. Each provider has its own credential reader,
+usage adapter, and display metadata. A failure in one provider does not prevent
+successful providers from updating. Missing windows display `--`, not a full quota.
+The firmware's default two faces still show Codex and Cursor; screen mapping is
+introduced by the following screen-configuration change.
+
+Claude requires **Claude Code signed in with the Claude subscription**, even if
+Claude for Mac is your usual client. On macOS the tool reads the
+`Claude Code-credentials` Keychain item. Alternatively, pass `--claude-auth PATH`
+to an existing Claude Code credential JSON file containing
+`claudeAiOauth.accessToken`. Do not copy tokens into a project configuration.
+The tool does not refresh OAuth tokens itself; sign in/refresh with Claude Code.
+
+```sh
+python3 computer/usage.py print --providers claude
+python3 computer/usage.py fetch --providers codex,cursor,claude
+```
+
+Claude usage is fetched from `https://api.anthropic.com/api/oauth/usage` using
+its OAuth bearer and `anthropic-beta: oauth-2025-04-20`. This subscription endpoint
+is undocumented and may change. The two meters use `five_hour` and `seven_day`
+utilization percentages and reset times; this is not Anthropic API credit billing.
+No account tokens or captured responses are included in the repository or tests.
+
+The version-1 credential payload now accepts any nonempty subset of the known
+provider keys. Claude's entry contains `access_token`; existing Codex and Cursor
+fields are unchanged. Each successful POST replaces the entire set: omitted
+providers are cleared. Malformed supplied credentials reject the replacement.
+Device endpoints are fixed in firmware and cannot be overridden by payload URLs.
+
+Credentials remain RAM-only with a one-hour lease. `watch` rereads credentials
+and renews even unchanged credentials every 30 minutes; `--always` still pushes
+each interval. Provider errors are reported separately without response bodies.
+
+Validation (no real credentials needed):
+
+```sh
+python3 -m unittest discover -s computer/tests -v
+cmake -S esp32/tests -B /tmp/ai-wroom-tests -DCJSON_DIR=/path/to/cJSON
+cmake --build /tmp/ai-wroom-tests
+ctest --test-dir /tmp/ai-wroom-tests --output-on-failure
+```
+
+The SDL simulator accepts `--claude` to preview a Claude face, `--meters` for
+meter previews, and `--smoke` to exit after a few frames (`SDL_VIDEODRIVER=dummy`
+works in a headless environment).

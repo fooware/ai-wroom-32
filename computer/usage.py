@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract Cursor and Codex client credentials, fetch usage, print it, and
+"""Extract local client credentials, fetch usage, print it, and
 optionally provision those credentials to an ESP32.
 """
 
@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -17,7 +19,8 @@ import sqlite3
 import subprocess
 import sys
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,9 +38,14 @@ DEFAULT_CURSOR_DB = (
     / "state.vscdb"
 )
 DEFAULT_CODEX_AUTH = Path.home() / ".codex" / "auth.json"
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 # nvs partition in the firmware two-OTA-large table (ssid/password only).
 NVS_OFFSET = 0x9000
 NVS_SIZE = 0x6000
+# Renew well before the device's one-hour credential lease expires.
+LEASE_REFRESH_SECONDS = 30 * 60
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class UsageError(RuntimeError):
@@ -56,7 +64,7 @@ def decode_jwt_payload(token: str) -> dict[str, Any]:
         segment = token.split(".")[1]
         segment += "=" * (-len(segment) % 4)
         return json.loads(base64.urlsafe_b64decode(segment))
-    except (IndexError, ValueError, json.JSONDecodeError) as error:
+    except (AttributeError, IndexError, TypeError, ValueError, binascii.Error, json.JSONDecodeError) as error:
         raise UsageError("credential is not a valid JWT") from error
 
 
@@ -111,6 +119,10 @@ def read_codex_credentials(auth_path: Path) -> dict[str, Any]:
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise UsageError(f"cannot read Codex credentials: {error}") from error
 
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise UsageError("Codex credentials are malformed")
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise UsageError("Codex credentials are malformed")
     claims = decode_jwt_payload(access_token)
     return {
         "access_token": access_token,
@@ -118,6 +130,17 @@ def read_codex_credentials(auth_path: Path) -> dict[str, Any]:
         "expires_at": claims.get("exp"),
         "auth_mode": document.get("auth_mode"),
     }
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward provider or device credentials to a redirect target."""
+
+    def redirect_request(self, request: Any, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def open_request(request: urllib.request.Request, timeout: float) -> Any:
+    return urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout)
 
 
 def request_json(
@@ -137,13 +160,19 @@ def request_json(
         request.add_header(name, value)
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)
+        with open_request(request, timeout) as response:
+            body_bytes = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body_bytes) > MAX_RESPONSE_BYTES:
+                raise UsageError("response exceeds size limit")
+            document = json.loads(body_bytes)
+            if not isinstance(document, dict):
+                raise UsageError("response is not a JSON object")
+            return document
     except urllib.error.HTTPError as error:
-        response_body = error.read(500).decode(errors="replace")
-        raise UsageError(f"{url} returned HTTP {error.code}: {response_body}") from error
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-        raise UsageError(f"request to {url} failed: {error}") from error
+        # Do not expose response bodies: providers can echo request data there.
+        raise UsageError(f"request failed with HTTP {error.code}") from error
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        raise UsageError("request failed") from None
 
 
 def fetch_cursor_usage(credentials: dict[str, Any]) -> dict[str, Any]:
@@ -192,25 +221,112 @@ def fetch_codex_usage(credentials: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def credential_payload(
-    cursor_credentials: dict[str, Any],
-    codex_credentials: dict[str, Any],
+def read_keychain_secret(service: str) -> str:
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        raise UsageError("Claude Code credentials are unavailable") from None
+    return result.stdout.strip()
+
+
+def read_claude_credentials(
+    auth_path: Path | None,
+    *,
+    keychain_reader: Callable[[str], str] = read_keychain_secret,
 ) -> dict[str, Any]:
+    """Read the OAuth credential Claude Code stores locally, without logging it."""
+    try:
+        if auth_path is not None:
+            document = json.loads(auth_path.expanduser().read_text())
+        else:
+            if sys.platform != "darwin":
+                raise UsageError("Claude Code credentials need --claude-auth on this platform")
+            document = json.loads(keychain_reader(CLAUDE_KEYCHAIN_SERVICE))
+        oauth = document.get("claudeAiOauth", document)
+        access_token = oauth["accessToken"]
+        if not isinstance(access_token, str) or not access_token.strip():
+            raise ValueError("empty access token")
+    except UsageError:
+        raise
+    except (OSError, TypeError, KeyError, ValueError, json.JSONDecodeError):
+        raise UsageError("Claude Code credentials are unavailable") from None
+    return {"access_token": access_token, "expires_at": oauth.get("expiresAt")}
+
+
+def fetch_claude_usage(credentials: dict[str, Any]) -> dict[str, Any]:
+    # Claude Code's OAuth usage request: official Anthropic skills document the
+    # bearer-token and oauth-2025-04-20 header convention.  The usage endpoint
+    # itself is not publicly documented, so this intentionally has no refresh flow.
+    raw = request_json(
+        CLAUDE_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {credentials['access_token']}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/ai-wroom-32",
+        },
+    )
+    def window(name: str) -> dict[str, Any] | None:
+        value = raw.get(name)
+        if not isinstance(value, dict):
+            return None
+        return {"utilization": value.get("utilization"), "resets_at": value.get("resets_at")}
     return {
-        "version": 1,
-        "issued_at": iso_time(time.time()),
-        "cursor": {
-            "usage_url": CURSOR_USAGE_URL,
-            "cookie": cursor_credentials["cookie"],
-            "expires_at": cursor_credentials.get("expires_at"),
-        },
-        "codex": {
-            "usage_url": CODEX_USAGE_URL,
-            "access_token": codex_credentials["access_token"],
-            "account_id": codex_credentials["account_id"],
-            "expires_at": codex_credentials.get("expires_at"),
-        },
+        "credential_expires_at": credentials.get("expires_at"),
+        "five_hour": window("five_hour"),
+        "seven_day": window("seven_day"),
     }
+
+
+@dataclass
+class Provider:
+    name: str
+    read_credentials: Callable[[argparse.Namespace], dict[str, Any]]
+    fetch_usage: Callable[[dict[str, Any]], dict[str, Any]]
+    payload: Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def cursor_payload(credentials: dict[str, Any]) -> dict[str, Any]:
+    return {"usage_url": CURSOR_USAGE_URL, "cookie": credentials["cookie"], "expires_at": credentials.get("expires_at")}
+
+
+def codex_payload(credentials: dict[str, Any]) -> dict[str, Any]:
+    return {"usage_url": CODEX_USAGE_URL, "access_token": credentials["access_token"], "account_id": credentials["account_id"], "expires_at": credentials.get("expires_at")}
+
+
+def claude_payload(credentials: dict[str, Any]) -> dict[str, Any]:
+    return {"access_token": credentials["access_token"], "expires_at": credentials.get("expires_at")}
+
+
+def _read_cursor(args: argparse.Namespace) -> dict[str, Any]:
+    return read_cursor_credentials(args.cursor_db.expanduser())
+
+
+def _read_codex(args: argparse.Namespace) -> dict[str, Any]:
+    return read_codex_credentials(args.codex_auth.expanduser())
+
+
+def _read_claude(args: argparse.Namespace) -> dict[str, Any]:
+    return read_claude_credentials(args.claude_auth)
+
+
+PROVIDERS: dict[str, Provider] = {
+    "cursor": Provider("cursor", _read_cursor, fetch_cursor_usage, cursor_payload),
+    "codex": Provider("codex", _read_codex, fetch_codex_usage, codex_payload),
+    "claude": Provider("claude", _read_claude, fetch_claude_usage, claude_payload),
+}
+
+
+def credential_payload(credentials: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Build a v1 snapshot; omitted providers intentionally clear on the device."""
+    payload: dict[str, Any] = {"version": 1, "issued_at": iso_time(time.time())}
+    for name, values in credentials.items():
+        payload[name] = PROVIDERS[name].payload(values)
+    return payload
 
 
 def push_http(
@@ -317,20 +433,41 @@ def erase_wifi_nvs(port: Path, baud: int) -> None:
     )
 
 
-def load_credentials(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
-    return (
-        read_cursor_credentials(args.cursor_db.expanduser()),
-        read_codex_credentials(args.codex_auth.expanduser()),
-    )
+def selected_providers(value: str) -> list[str]:
+    names = [name.strip().lower() for name in value.split(",") if name.strip()]
+    if not names:
+        raise argparse.ArgumentTypeError("--providers must name at least one provider")
+    unknown = [name for name in names if name not in PROVIDERS]
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown provider: {unknown[0]}")
+    if len(set(names)) != len(names):
+        raise argparse.ArgumentTypeError("--providers must not repeat a provider")
+    return names
+
+
+def load_credentials(args: argparse.Namespace) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Load every requested credential independently, retaining healthy entries."""
+    credentials: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for name in args.providers:
+        try:
+            credentials[name] = PROVIDERS[name].read_credentials(args)
+        except UsageError:
+            errors[name] = "credentials unavailable"
+    return credentials, errors
 
 
 def collect_usage(args: argparse.Namespace) -> dict[str, Any]:
-    cursor, codex = load_credentials(args)
-    return {
-        "fetched_at": iso_time(time.time()),
-        "cursor": fetch_cursor_usage(cursor),
-        "codex": fetch_codex_usage(codex),
-    }
+    credentials, errors = load_credentials(args)
+    result: dict[str, Any] = {"fetched_at": iso_time(time.time())}
+    for name, values in credentials.items():
+        try:
+            result[name] = PROVIDERS[name].fetch_usage(values)
+        except UsageError as error:
+            errors[name] = str(error)
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 def format_hms(seconds: int | float | None) -> str:
@@ -401,28 +538,26 @@ def format_codex_window(title: str, window: dict[str, Any] | None) -> list[str]:
 
 
 def render_plain(result: dict[str, Any]) -> str:
-    codex = result.get("codex") or {}
-    rate_limit = codex.get("rate_limit") or {}
-    resets = (codex.get("rate_limit_reset_credits") or {}).get("available_count")
-    if resets is None:
-        resets = "unknown"
-
-    lines = [
-        "Codex",
-        f"  Available resets: {resets}",
-        *format_codex_window("Primary", rate_limit.get("primary_window")),
-        *format_codex_window("Secondary", rate_limit.get("secondary_window")),
-        "",
-    ]
-
-    cursor = result.get("cursor") or {}
-    plan = ((cursor.get("individual_usage") or {}).get("plan") or {})
-    on_demand = ((cursor.get("individual_usage") or {}).get("onDemand") or {})
-    team_on_demand = ((cursor.get("team_usage") or {}).get("onDemand") or {})
-    cycle_end = cursor.get("billing_cycle_end")
-
-    lines.extend(
-        [
+    lines: list[str] = []
+    if "codex" in result:
+        codex = result["codex"] or {}
+        rate_limit = codex.get("rate_limit") or {}
+        resets = (codex.get("rate_limit_reset_credits") or {}).get("available_count")
+        lines.extend([
+            "Codex",
+            f"  Available resets: {resets if resets is not None else 'unknown'}",
+            *format_codex_window("Primary", rate_limit.get("primary_window")),
+            *format_codex_window("Secondary", rate_limit.get("secondary_window")),
+        ])
+    if "cursor" in result:
+        if lines:
+            lines.append("")
+        cursor = result["cursor"] or {}
+        plan = ((cursor.get("individual_usage") or {}).get("plan") or {})
+        on_demand = ((cursor.get("individual_usage") or {}).get("onDemand") or {})
+        team_on_demand = ((cursor.get("team_usage") or {}).get("onDemand") or {})
+        cycle_end = cursor.get("billing_cycle_end")
+        lines.extend([
             "Cursor",
             "  Billing cycle",
             f"    Usage left: {format_percent_left(plan.get('totalPercentUsed'))}",
@@ -432,26 +567,34 @@ def render_plain(result: dict[str, Any]) -> str:
             f"    Usage left: {format_percent_left(plan.get('autoPercentUsed'))}",
             "  Named / API models",
             f"    Usage left: {format_percent_left(plan.get('apiPercentUsed'))}",
-        ]
-    )
-    if on_demand.get("enabled"):
-        used = format_usd_cents(on_demand.get("used"))
-        limit = on_demand.get("limit")
-        if limit:
-            remaining = format_usd_cents(on_demand.get("remaining"))
-            lines.append(
-                f"  On-demand: {used} used, {remaining} remaining of "
-                f"{format_usd_cents(limit)}"
-            )
-        else:
-            lines.append(f"  On-demand: {used} used (no individual cap)")
-    if team_on_demand.get("enabled") and team_on_demand.get("limit") is not None:
-        lines.append(
-            "  Team on-demand: "
-            f"{format_usd_cents(team_on_demand.get('used'))} used, "
-            f"{format_usd_cents(team_on_demand.get('remaining'))} remaining of "
-            f"{format_usd_cents(team_on_demand.get('limit'))}"
-        )
+        ])
+        if on_demand.get("enabled"):
+            used = format_usd_cents(on_demand.get("used"))
+            limit = on_demand.get("limit")
+            if limit:
+                remaining = format_usd_cents(on_demand.get("remaining"))
+                lines.append(f"  On-demand: {used} used, {remaining} remaining of {format_usd_cents(limit)}")
+            else:
+                lines.append(f"  On-demand: {used} used (no individual cap)")
+        if team_on_demand.get("enabled") and team_on_demand.get("limit") is not None:
+            lines.append("  Team on-demand: " + f"{format_usd_cents(team_on_demand.get('used'))} used, " + f"{format_usd_cents(team_on_demand.get('remaining'))} remaining of {format_usd_cents(team_on_demand.get('limit'))}")
+    if "claude" in result:
+        if lines:
+            lines.append("")
+        claude = result["claude"] or {}
+        lines.extend([
+            "Claude",
+            f"  Five-hour usage left: {format_percent_left((claude.get('five_hour') or {}).get('utilization'))}",
+            f"  Five-hour reset: {format_iso_local((claude.get('five_hour') or {}).get('resets_at'))}",
+            f"  Seven-day usage left: {format_percent_left((claude.get('seven_day') or {}).get('utilization'))}",
+            f"  Seven-day reset: {format_iso_local((claude.get('seven_day') or {}).get('resets_at'))}",
+        ])
+    errors = result.get("errors") or {}
+    if errors:
+        if lines:
+            lines.append("")
+        lines.append("Errors")
+        lines.extend(f"  {name}: {error}" for name, error in errors.items())
     return "\n".join(lines)
 
 
@@ -464,8 +607,12 @@ def run_print(args: argparse.Namespace) -> None:
 
 
 def run_push(args: argparse.Namespace) -> None:
-    cursor, codex = load_credentials(args)
-    payload = credential_payload(cursor, codex)
+    credentials, errors = load_credentials(args)
+    if not credentials:
+        raise UsageError("no selected provider credentials are available")
+    for name, error in errors.items():
+        print(f"warning: {name}: {error}", file=sys.stderr)
+    payload = credential_payload(credentials)
     device_token = args.pin or (
         os.environ.get(args.device_token_env) if args.device_token_env else None
     )
@@ -490,36 +637,54 @@ def run_wifi_reset(args: argparse.Namespace) -> None:
     erase_wifi_nvs(args.serial.expanduser(), args.baud)
 
 
+def credential_fingerprint(credentials: dict[str, dict[str, Any]]) -> str:
+    encoded = json.dumps(credentials, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def provision(args: argparse.Namespace, payload: dict[str, Any]) -> None:
+    device_token = args.pin or (
+        os.environ.get(args.device_token_env) if args.device_token_env else None
+    )
+    if args.serial:
+        push_serial(args.serial.expanduser(), payload, args.baud)
+    else:
+        if not device_token:
+            raise UsageError("HTTP watch requires --pin or AI_WROOM_DEVICE_TOKEN")
+        push_http(args.url, payload, device_token, args.allow_insecure_http)
+
+
 def run_watch(args: argparse.Namespace) -> None:
-    previous_fingerprint = None
+    previous_fingerprint: str | None = None
+    last_push = 0.0
     while True:
-        cursor, codex = load_credentials(args)
-        payload = credential_payload(cursor, codex)
-        fingerprint = hashlib.sha256(
-            (cursor["cookie"] + codex["access_token"]).encode()
-        ).hexdigest()
-        if fingerprint != previous_fingerprint or args.always:
-            device_token = (
-                args.pin
-                or (
-                    os.environ.get(args.device_token_env)
-                    if args.device_token_env
-                    else None
-                )
-            )
-            if args.serial:
-                push_serial(args.serial.expanduser(), payload, args.baud)
-            else:
-                if not device_token:
-                    raise UsageError(
-                        "HTTP watch requires --pin or AI_WROOM_DEVICE_TOKEN"
-                    )
-                push_http(args.url, payload, device_token, args.allow_insecure_http)
-            previous_fingerprint = fingerprint
+        try:
+            credentials, errors = load_credentials(args)
+            if not credentials:
+                raise UsageError("no selected provider credentials are available")
+            fingerprint = credential_fingerprint(credentials)
+            now = time.monotonic()
+            if fingerprint != previous_fingerprint or args.always or now - last_push >= LEASE_REFRESH_SECONDS:
+                provision(args, credential_payload(credentials))
+                previous_fingerprint = fingerprint
+                last_push = now
+            for name, error in errors.items():
+                print(f"warning: {name}: {error}", file=sys.stderr)
+        except UsageError as error:
+            # Watching is intended to outlive transient local and network failures.
+            if str(error) in ("request failed with HTTP 401", "request failed with HTTP 423"):
+                raise
+            print(f"warning: {error}", file=sys.stderr)
         time.sleep(args.interval)
 
 
 def add_source_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--providers",
+        type=selected_providers,
+        default=["codex", "cursor"],
+        help="comma-separated providers (default: codex,cursor)",
+    )
     parser.add_argument(
         "--cursor-db",
         type=Path,
@@ -531,6 +696,11 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=DEFAULT_CODEX_AUTH,
         help=f"Codex auth file (default: {DEFAULT_CODEX_AUTH})",
+    )
+    parser.add_argument(
+        "--claude-auth",
+        type=Path,
+        help="Claude Code OAuth JSON file (default: macOS Keychain)",
     )
 
 
@@ -556,6 +726,16 @@ def add_push_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def positive_interval(value: str) -> float:
+    try:
+        interval = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("interval must be a positive number") from error
+    if not math.isfinite(interval) or not 0 < interval <= 300:
+        raise argparse.ArgumentTypeError("interval must be finite, positive, and at most 300 seconds")
+    return interval
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -579,7 +759,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_source_arguments(watch)
     add_push_arguments(watch)
-    watch.add_argument("--interval", type=float, default=60)
+    watch.add_argument("--interval", type=positive_interval, default=60)
     watch.add_argument(
         "--always",
         action="store_true",

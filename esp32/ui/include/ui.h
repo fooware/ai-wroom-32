@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
+#include "provider.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,23 +10,6 @@ extern "C" {
 #define UI_HRES 240
 #define UI_VRES 240
 #define UI_STAR_COUNT 7
-
-/*
- * Horizontal offset of each arc's name/percent labels from screen center.
- * Positive moves the label toward the outer edge of its arc.
- */
-#ifndef UI_CODEX_LEFT_BAR_LABEL_X
-#define UI_CODEX_LEFT_BAR_LABEL_X 40
-#endif
-#ifndef UI_CODEX_RIGHT_BAR_LABEL_X
-#define UI_CODEX_RIGHT_BAR_LABEL_X 40
-#endif
-#ifndef UI_CURSOR_LEFT_BAR_LABEL_X
-#define UI_CURSOR_LEFT_BAR_LABEL_X 28
-#endif
-#ifndef UI_CURSOR_RIGHT_BAR_LABEL_X
-#define UI_CURSOR_RIGHT_BAR_LABEL_X 31
-#endif
 
 typedef struct {
   int16_t left_x;
@@ -67,30 +51,8 @@ typedef struct {
   lv_obj_t *line3;
 } ui_face_t;
 
-typedef struct {
-  ui_face_t codex;
-  ui_face_t cursor;
-} ui_demo_t;
-
-typedef struct {
-  int primary_left_pct; /* remaining, 0..100 */
-  int weekly_left_pct;
-  const char *primary_until; /* hours, minutes */
-  const char *weekly_reset;  /* date */
-  const char *free_resets;
-} ui_codex_data_t;
-
-typedef struct {
-  int auto_left_pct;
-  int named_left_pct;
-  const char *on_demand_used;
-  const char *team_on_demand_left;
-  const char *until_reset; /* days, hours */
-} ui_cursor_data_t;
-
-void ui_demo_create(lv_display_t *codex_disp, lv_display_t *cursor_disp, ui_demo_t *out);
-void ui_codex_apply(ui_face_t *face, const ui_codex_data_t *data);
-void ui_cursor_apply(ui_face_t *face, const ui_cursor_data_t *data);
+void ui_face_create(lv_display_t *display, provider_id_t provider, ui_face_t *out);
+void ui_provider_apply(ui_face_t *face, provider_id_t provider, const provider_data_t *data);
 
 /* Show one animated 480x240 starfield split across the two displays. */
 void ui_attraction_create(lv_display_t *left_disp, lv_display_t *right_disp,

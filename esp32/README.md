@@ -134,3 +134,11 @@ over HTTPS, waiting 15 seconds after each attempt, and draws the dual meter
 faces. Keep the computer pushing with `watch --always` so the one-hour RAM
 lease does not expire. When the lease ends, tokens are wiped and attraction
 returns.
+
+## Provider updates
+
+The shared UI accepts provider-neutral usage data for Codex, Cursor, and Claude.
+Firmware polls each available provider independently over HTTPS with one TLS
+session at a time. Missing login, failed requests, and unavailable quota windows
+are shown on that provider's face. A credential generation check discards results
+from superseded or expired login snapshots. Tokens still live only in RAM.

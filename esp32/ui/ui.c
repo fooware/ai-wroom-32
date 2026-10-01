@@ -4,8 +4,6 @@
 
 #define COLOR_TRACK lv_color_hex(0x2a333c)
 #define COLOR_MUTED lv_color_hex(0xa8b4c0)
-#define COLOR_CODEX lv_color_hex(0x00a878)
-#define COLOR_CURSOR lv_color_hex(0xf54e00)
 
 /* LVGL angles run clockwise from 3 o'clock, so 270 is the top. */
 #define ARC_TOP_DEG 270
@@ -13,15 +11,6 @@
 #define ARC_TOP_GAP_DEG 9
 #define ARC_WIDTH 24
 #define CENTER_WIDTH 150
-
-static const ui_bar_label_pad_t CODEX_BAR_LABEL_PAD = {
-    UI_CODEX_LEFT_BAR_LABEL_X,
-    UI_CODEX_RIGHT_BAR_LABEL_X,
-};
-static const ui_bar_label_pad_t CURSOR_BAR_LABEL_PAD = {
-    UI_CURSOR_LEFT_BAR_LABEL_X,
-    UI_CURSOR_RIGHT_BAR_LABEL_X,
-};
 
 static int clamp_pct(int percent) {
   if (percent < 0) {
@@ -92,11 +81,13 @@ static void create_side_arc(lv_obj_t *parent, int32_t label_x, lv_color_t accent
 }
 
 static void set_side_bar(ui_side_bar_t *bar, const char *name, int remaining_pct) {
+  bool unknown = remaining_pct < 0;
   remaining_pct = clamp_pct(remaining_pct);
   lv_label_set_text(bar->name, name);
   lv_arc_set_value(bar->arc, remaining_pct);
   char buf[8];
-  snprintf(buf, sizeof(buf), "%d%%", remaining_pct);
+  if (unknown) snprintf(buf, sizeof(buf), "--");
+  else snprintf(buf, sizeof(buf), "%d%%", remaining_pct);
   lv_label_set_text(bar->percent, buf);
 }
 
@@ -135,25 +126,22 @@ static void create_face(lv_display_t *disp, lv_color_t accent, const ui_bar_labe
   create_center(scr, out);
 }
 
-void ui_codex_apply(ui_face_t *face, const ui_codex_data_t *data) {
-  set_side_bar(&face->left_bar, "5h", data->primary_left_pct);
-  set_side_bar(&face->right_bar, "1w", data->weekly_left_pct);
-  lv_label_set_text(face->title, "Codex");
-  lv_label_set_text(face->line1, data->free_resets);
-  lv_label_set_text(face->line2, data->primary_until);
-  lv_label_set_text(face->line3, data->weekly_reset);
+void ui_face_create(lv_display_t *display, provider_id_t provider, ui_face_t *out) {
+  const provider_info_t *info = provider_info(provider);
+  if (!display || !info || !out) return;
+  const ui_bar_label_pad_t pad = {info->label_x[0], info->label_x[1]};
+  create_face(display, lv_color_hex(info->accent), &pad, out);
+  const provider_data_t waiting = {.remaining = {-1, -1}, .status = "Waiting for login"};
+  ui_provider_apply(out, provider, &waiting);
 }
 
-void ui_cursor_apply(ui_face_t *face, const ui_cursor_data_t *data) {
-  set_side_bar(&face->left_bar, "Cheap", data->auto_left_pct);
-  set_side_bar(&face->right_bar, "Good", data->named_left_pct);
-  lv_label_set_text(face->title, "Cursor");
-  lv_label_set_text(face->line1, data->on_demand_used);
-  lv_label_set_text(face->line2, data->team_on_demand_left);
-  lv_label_set_text(face->line3, data->until_reset);
-}
-
-void ui_demo_create(lv_display_t *codex_disp, lv_display_t *cursor_disp, ui_demo_t *out) {
-  create_face(codex_disp, COLOR_CODEX, &CODEX_BAR_LABEL_PAD, &out->codex);
-  create_face(cursor_disp, COLOR_CURSOR, &CURSOR_BAR_LABEL_PAD, &out->cursor);
+void ui_provider_apply(ui_face_t *face, provider_id_t provider, const provider_data_t *data) {
+  const provider_info_t *info = provider_info(provider);
+  if (!face || !info || !data) return;
+  lv_label_set_text(face->title, info->title);
+  set_side_bar(&face->left_bar, info->bar_names[0], data->available ? data->remaining[0] : -1);
+  set_side_bar(&face->right_bar, info->bar_names[1], data->available ? data->remaining[1] : -1);
+  lv_label_set_text(face->line1, data->available ? data->lines[0] : data->status);
+  lv_label_set_text(face->line2, data->available ? data->lines[1] : "");
+  lv_label_set_text(face->line3, data->available ? data->lines[2] : "");
 }
