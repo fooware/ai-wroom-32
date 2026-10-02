@@ -48,15 +48,20 @@ typedef struct {
 } gc9b72_panel_t;
 
 /*
- * The controller's vendor register meanings are unpublished. Keep their
- * addresses visibly distinct from standard MIPI DCS commands instead of
- * assigning speculative names. ESP-IDF already supplies the standard TEON name.
+ * Functional names for the extended-command gate and gamma controls come from
+ * guillermozuur-design/gc9b72's INIT_SEQUENCE.md, revision
+ * 7b3d6dd1c654ab22e4060409923e75224473f696 (see GC9B72-REGISTERS.md).
+ * That driver documents their functions, but does not supply manufacturer
+ * register mnemonics or gamma-bank polarity/channel definitions. The ordinal
+ * suffixes distinguish commands; they do not imply a bitfield interpretation.
+ * Remaining VENDOR_REG entries have no identified function in the sources we
+ * inspected. Standard DCS names are supplied by ESP-IDF.
  */
 enum {
   GC9B72_PIXEL_FORMAT_RGB565 = 0x05,
-  GC9B72_VENDOR_REG_EE = 0xEE,
-  GC9B72_VENDOR_REG_EF = 0xEF,
-  GC9B72_VENDOR_REG_FE = 0xFE,
+  GC9B72_EXTENDED_COMMAND_LOCK = 0xEE,
+  GC9B72_EXTENDED_COMMAND_UNLOCK_2 = 0xEF,
+  GC9B72_EXTENDED_COMMAND_UNLOCK_1 = 0xFE,
   GC9B72_VENDOR_REG_60 = 0x60,
   GC9B72_VENDOR_REG_61 = 0x61,
   GC9B72_VENDOR_REG_62 = 0x62,
@@ -102,10 +107,10 @@ enum {
   GC9B72_VENDOR_REG_CB = 0xCB,
   GC9B72_VENDOR_REG_EB = 0xEB,
   GC9B72_VENDOR_REG_EC = 0xEC,
-  GC9B72_VENDOR_REG_F0 = 0xF0,
-  GC9B72_VENDOR_REG_F1 = 0xF1,
-  GC9B72_VENDOR_REG_F2 = 0xF2,
-  GC9B72_VENDOR_REG_F3 = 0xF3,
+  GC9B72_GAMMA_CONTROL_1 = 0xF0,
+  GC9B72_GAMMA_CONTROL_2 = 0xF1,
+  GC9B72_GAMMA_CONTROL_3 = 0xF2,
+  GC9B72_GAMMA_CONTROL_4 = 0xF3,
   GC9B72_VENDOR_REG_F6 = 0xF6,
   GC9B72_VENDOR_REG_F9 = 0xF9,
   GC9B72_VENDOR_REG_FB = 0xFB,
@@ -119,12 +124,14 @@ enum {
 
 /*
  * Exact 360x360 startup sequence from xboot's fb-gc9b72.c. The vendor
- * payloads and lengths are preserved byte-for-byte; their meanings are not
- * publicly documented. Do not edit this table without panel validation.
+ * payloads and lengths are preserved byte-for-byte. Functional names are used
+ * where GC9B72-specific documentation identifies them; the remaining setup
+ * values still require a controller register map. Keep tuning values unchanged
+ * until validated on the panel.
  */
 static const gc9b72_init_command_t default_init[] = {
-    /* Initial vendor commands and one-byte setup values. */
-    CMD0(GC9B72_VENDOR_REG_FE), CMD0(GC9B72_VENDOR_REG_EF),
+    /* Unlock the extended command set before writing the vendor setup registers. */
+    CMD0(GC9B72_EXTENDED_COMMAND_UNLOCK_1), CMD0(GC9B72_EXTENDED_COMMAND_UNLOCK_2),
     CMD1(GC9B72_VENDOR_REG_80, 0x19), CMD1(GC9B72_VENDOR_REG_82, 0x09), CMD1(GC9B72_VENDOR_REG_83, 0x03),
     CMD1(GC9B72_VENDOR_REG_88, 0x00), CMD1(GC9B72_VENDOR_REG_89, 0x38), CMD1(GC9B72_VENDOR_REG_8A, 0x40),
     CMD1(GC9B72_VENDOR_REG_8B, 0x0A), CMD1(GC9B72_VENDOR_REG_8C, 0x00), CMD1(GC9B72_VENDOR_REG_81, 0xFF),
@@ -150,15 +157,15 @@ static const gc9b72_init_command_t default_init[] = {
     /* Standard DCS: 0x05 is 16-bit RGB565; MADCTL is replaced from caller configuration. */
     CMD1(LCD_CMD_COLMOD, GC9B72_PIXEL_FORMAT_RGB565), CMD1(LCD_CMD_MADCTL, 0x00),
 
-    /* More unpublished vendor setup. F0-F3 are intentionally not labelled as gamma registers. */
+    /* Vendor setup followed by the four documented gamma-control commands. */
     CMD2(GC9B72_VENDOR_REG_7C, 0xB6, 0x29), CMD1(GC9B72_VENDOR_REG_AC, 0x40), CMD1(GC9B72_VENDOR_REG_C3, 0x1A),
     CMD1(GC9B72_VENDOR_REG_C4, 0x24), CMD1(GC9B72_VENDOR_REG_C9, 0x2F),
-    CMDN(GC9B72_VENDOR_REG_F0, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_VENDOR_REG_F1, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
-    CMDN(GC9B72_VENDOR_REG_F2, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_VENDOR_REG_F3, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
+    CMDN(GC9B72_GAMMA_CONTROL_1, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_GAMMA_CONTROL_2, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
+    CMDN(GC9B72_GAMMA_CONTROL_3, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_GAMMA_CONTROL_4, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
     CMD1(GC9B72_VENDOR_REG_B4, 0x0A), CMD1(LCD_CMD_TEON, 0x00),
 
-    /* Final vendor commands, then leave sleep and enable pixels after required delays. */
-    CMD0(GC9B72_VENDOR_REG_FE), CMD0(GC9B72_VENDOR_REG_EE),
+    /* Close the extended command set before leaving sleep and enabling pixels. */
+    CMD0(GC9B72_EXTENDED_COMMAND_UNLOCK_1), CMD0(GC9B72_EXTENDED_COMMAND_LOCK),
     CMD0_DELAY(LCD_CMD_SLPOUT, 120), CMD0_DELAY(LCD_CMD_DISPON, 20),
 };
 
