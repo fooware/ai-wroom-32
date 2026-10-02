@@ -29,7 +29,8 @@ static void position_star(ui_attraction_screen_t *screen, ui_star_t *star) {
   int x = star->x_q8 / 256;
   int y = star->y_q8 / 256;
   int distance = x < 0 ? -x : x;
-  int size = distance > screen->width / 3 ? 3 : 2;
+  int size = ui_scale_px(screen->width, screen->height,
+                         distance > screen->width / 3 ? 3 : 2);
   lv_obj_set_size(star->dot, size, size);
   lv_obj_set_pos(star->dot, screen->width / 2 + x - size / 2,
                 screen->height / 2 + y - size / 2);
@@ -44,7 +45,9 @@ static void starfield_tick(lv_timer_t *timer) {
       star->x_q8 += star->x_q8 / 28;
       star->y_q8 += star->y_q8 / 28;
       if (abs(star->x_q8 / 256) > screen->width / 2 ||
-          abs(star->y_q8 / 256) > screen->height / 2) reset_star(screen, star, 3);
+          abs(star->y_q8 / 256) > screen->height / 2) {
+        reset_star(screen, star, ui_scale_px(screen->width, screen->height, 3));
+      }
       position_star(screen, star);
     }
   }
@@ -129,21 +132,30 @@ void ui_attraction_create(lv_display_t *const *displays, const provider_id_t *pr
       lv_obj_set_style_bg_color(star->dot, lv_color_white(), 0);
       lv_obj_set_style_bg_opa(star->dot, LV_OPA_COVER, 0);
       lv_obj_set_style_radius(star->dot, LV_RADIUS_CIRCLE, 0);
-      reset_star(screen, star, INITIAL_DISTANCE[i] / 2 + 1);
+      /* Seed distances in that panel's pixels so mixed resolutions have equal depth. */
+      reset_star(screen, star,
+                 ui_scale_px(screen->width, screen->height, INITIAL_DISTANCE[i] / 2 + 1));
       position_star(screen, star);
     }
     const provider_info_t *info = provider_info(providers[n]);
     lv_color_t accent = lv_color_hex(info ? info->accent : 0x00a878);
+    const bool large = ui_is_large_display(screen->width, screen->height);
     if (n + 1 == count) {
-      out->hint = make_text(screen->root, "", &lv_font_montserrat_16, COLOR_HINT,
-                            LV_ALIGN_CENTER, -58, 168);
-      out->ip = make_text(screen->root, "", &lv_font_montserrat_28, accent,
-                          LV_ALIGN_CENTER, 4, 0);
-      out->pin = make_text(screen->root, "", &lv_font_montserrat_28, accent,
-                           LV_ALIGN_CENTER, 40, 0);
+      out->hint = make_text(screen->root, "",
+                            large ? &lv_font_montserrat_24 : &lv_font_montserrat_16,
+                            COLOR_HINT, LV_ALIGN_CENTER,
+                            -ui_scale_px(screen->width, screen->height, 58),
+                            ui_scale_px(screen->width, screen->height, 168));
+      out->ip = make_text(screen->root, "",
+                          large ? &lv_font_montserrat_34 : &lv_font_montserrat_28, accent,
+                          LV_ALIGN_CENTER, ui_scale_px(screen->width, screen->height, 4), 0);
+      out->pin = make_text(screen->root, "",
+                           large ? &lv_font_montserrat_48 : &lv_font_montserrat_28, accent,
+                           LV_ALIGN_CENTER, ui_scale_px(screen->width, screen->height, 40), 0);
     } else {
       make_text(screen->root, "AI-O-\nMETER", &lv_font_montserrat_48, accent,
-                 LV_ALIGN_CENTER, -4, 200);
+                 LV_ALIGN_CENTER, -ui_scale_px(screen->width, screen->height, 4),
+                 ui_scale_px(screen->width, screen->height, 200));
     }
   }
   ui_attraction_set_connection(out, ip_address, pin);

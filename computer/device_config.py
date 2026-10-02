@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 
 CONFIG_VERSION = 1
-SCREEN_TYPES = ("gc9a01_240",)
+SCREEN_TYPES = ("gc9a01_240", "gc9b72_360")
 PROVIDERS = ("codex", "cursor", "claude")
 _TOP_LEVEL_KEYS = {"version", "device", "screens", "allow_insecure_http"}
 _DEVICE_KEYS = {"base_url"}

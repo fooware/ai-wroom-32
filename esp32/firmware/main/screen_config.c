@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const screen_type_t types[] = {{"gc9a01_240", 240, 240}};
+static const screen_type_t types[] = {{"gc9a01_240", 240, 240}, {"gc9b72_360", 360, 360}};
 static const screen_pins_t pins[SCREEN_MAX_COUNT] = {
   {CONFIG_METER_SCREEN_1_CS, CONFIG_METER_SCREEN_1_RST},
   {CONFIG_METER_SCREEN_2_CS, CONFIG_METER_SCREEN_2_RST},

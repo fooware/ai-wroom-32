@@ -26,3 +26,9 @@ set_source_files_properties(${CJSON_DIR}/cJSON.c PROPERTIES
   COMPILE_OPTIONS "-Wno-error=deprecated-declarations")
 target_link_options(screen_config_test PRIVATE -fsanitize=address,undefined)
 add_test(NAME screen_config_test COMMAND screen_config_test)
+
+add_executable(gc9b72_test gc9b72_test.c ../firmware/main/gc9b72.c)
+target_include_directories(gc9b72_test PRIVATE hostinclude ../firmware/main)
+target_compile_options(gc9b72_test PRIVATE -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer)
+target_link_options(gc9b72_test PRIVATE -fsanitize=address,undefined)
+add_test(NAME gc9b72_test COMMAND gc9b72_test)

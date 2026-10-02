@@ -11,6 +11,16 @@ extern "C" {
 #define UI_VRES 240
 #define UI_STAR_COUNT 7
 
+static inline int ui_scale_px(int width, int height, int value_240) {
+  const int shortest_side = width < height ? width : height;
+  /* Round instead of truncating so thin strokes remain visible on 360px panels. */
+  return (value_240 * shortest_side + UI_HRES / 2) / UI_HRES;
+}
+
+static inline bool ui_is_large_display(int width, int height) {
+  return (width < height ? width : height) >= 360;
+}
+
 typedef struct {
   int16_t left_x;
   int16_t right_x;

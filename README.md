@@ -376,3 +376,35 @@ framebuffer per screen. If PSRAM is enabled and available, LVGL draws there and
 the port copies strips into internal DMA buffers. DMA sends one panel's strip
 at a time on the shared SPI bus. This release supports at most three panels;
 PSRAM capacity alone does not increase that limit.
+
+### Mixed 240 and 360 pixel panels
+
+The wizard and JSON accept `gc9a01_240` (GC9A01, 240×240) and `gc9b72_360`
+(GC9B72, 360×360) independently for each screen. For example, change a screen to
+`{"type":"gc9b72_360","provider":"claude"}` and configure/reboot as above.
+The UI derives geometry from each display and selects suitable font sizes;
+240 and 360 pixel panels can share the same bus. These are supported controller
+profiles, not interchangeable resolutions for arbitrary controllers.
+
+For the GC9B72 breakout labelled GND/VCC/SCL/SDA/RST/DC/CS/BL/SDO/TE, connect
+SCL to shared SCLK and SDA to shared MOSI. Use its slot's CS and RST, shared DC,
+and the module's specified supply voltage with a common ground. Enable BL as
+specified by the module (there is no backlight PWM control in this firmware).
+SDO and TE are unused. The panel runs regular four-wire SPI at 20 MHz. The new
+driver preserves the attributed xboot GC9B72 startup sequence; physical color
+order, orientation, inversion and wiring still need verification when the panel
+arrives. Standard DCS commands are named. Vendor names for internal-register enable,
+power, gamma, inversion and TE width are inferred from the sibling GC9B71
+datasheet. [The register comparison](esp32/firmware/main/GC9B72-REGISTERS.md) lists
+xboot and datasheet parameter counts, source pages, and known discrepancies.
+
+Preview mixed screens without hardware:
+
+```sh
+esp32/sim/build/sim --screens gc9a01_240:codex,gc9b72_360:cursor,gc9b72_360:claude --meters
+SDL_VIDEODRIVER=dummy esp32/sim/build/sim --screens gc9b72_360:claude --meters --smoke --snapshot /tmp/claude
+```
+
+`--snapshot` with `--smoke` exports one rendered PPM per screen for visual checks.
+The simulator's memory pool is larger to accommodate full-resolution snapshots;
+the device continues to use partial transfer buffers.

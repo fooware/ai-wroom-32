@@ -40,15 +40,18 @@ static lv_obj_t *make_label(lv_obj_t *parent, lv_color_t color, const char *text
   return lbl;
 }
 
-static void create_side_arc(lv_obj_t *parent, int32_t label_x, lv_color_t accent, ui_side_bar_t *out) {
+static void create_side_arc(lv_obj_t *parent, int width, int height, int32_t label_x,
+                            lv_color_t accent, ui_side_bar_t *out) {
+  const int arc_size = ui_scale_px(width, height, 228);
+  const int arc_width = ui_scale_px(width, height, ARC_WIDTH);
   lv_obj_t *arc = lv_arc_create(parent);
-  lv_obj_set_size(arc, 228, 228);
+  lv_obj_set_size(arc, arc_size, arc_size);
   lv_obj_center(arc);
   lv_arc_set_range(arc, 0, 100);
   lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
   lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_set_style_arc_width(arc, ARC_WIDTH, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(arc, ARC_WIDTH, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(arc, arc_width, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(arc, arc_width, LV_PART_INDICATOR);
   lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
   lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
   lv_obj_set_style_arc_color(arc, COLOR_TRACK, LV_PART_MAIN);
@@ -65,15 +68,19 @@ static void create_side_arc(lv_obj_t *parent, int32_t label_x, lv_color_t accent
 
   lv_obj_t *name = lv_label_create(parent);
   lv_obj_set_style_text_color(name, COLOR_MUTED, 0);
-  lv_obj_set_style_text_font(name, &lv_font_montserrat_16, 0);
+  /* Keep the large face legible without adding the expensive 72px font. */
+  const lv_font_t *label_font = ui_is_large_display(width, height)
+                                     ? &lv_font_montserrat_24
+                                     : &lv_font_montserrat_16;
+  lv_obj_set_style_text_font(name, label_font, 0);
   lv_obj_t *percent = lv_label_create(parent);
   lv_obj_set_style_text_color(percent, lv_color_white(), 0);
-  lv_obj_set_style_text_font(percent, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(percent, label_font, 0);
   /* Both labels sit below the open end of their own arc. */
   lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_align(percent, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(name, LV_ALIGN_BOTTOM_MID, label_x, -36);
-  lv_obj_align(percent, LV_ALIGN_BOTTOM_MID, label_x, -16);
+  lv_obj_align(name, LV_ALIGN_BOTTOM_MID, label_x, -ui_scale_px(width, height, 36));
+  lv_obj_align(percent, LV_ALIGN_BOTTOM_MID, label_x, -ui_scale_px(width, height, 16));
 
   out->arc = arc;
   out->name = name;
@@ -91,39 +98,47 @@ static void set_side_bar(ui_side_bar_t *bar, const char *name, int remaining_pct
   lv_label_set_text(bar->percent, buf);
 }
 
-static void create_center(lv_obj_t *parent, ui_face_t *face) {
+static void create_center(lv_obj_t *parent, int width, int height, ui_face_t *face) {
+  const int center_width = ui_scale_px(width, height, CENTER_WIDTH);
+  const bool large = ui_is_large_display(width, height);
   lv_obj_t *box = lv_obj_create(parent);
   lv_obj_remove_style_all(box);
-  lv_obj_set_size(box, CENTER_WIDTH, LV_SIZE_CONTENT);
+  lv_obj_set_size(box, center_width, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_row(box, 2, 0);
+  lv_obj_set_style_pad_row(box, ui_scale_px(width, height, 2), 0);
   lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_align(box, LV_ALIGN_CENTER, 0, -10);
+  lv_obj_align(box, LV_ALIGN_CENTER, 0, -ui_scale_px(width, height, 10));
 
   face->title = make_label(box, lv_color_white(), "");
-  lv_obj_set_style_text_font(face->title, &lv_font_montserrat_34, 0);
+  lv_obj_set_style_text_font(face->title,
+                             large ? &lv_font_montserrat_48 : &lv_font_montserrat_34, 0);
   face->line1 = make_label(box, COLOR_MUTED, "");
   face->line2 = make_label(box, COLOR_MUTED, "");
   face->line3 = make_label(box, COLOR_MUTED, "");
-  lv_obj_set_style_text_font(face->line1, &lv_font_montserrat_18, 0);
-  lv_obj_set_style_text_font(face->line2, &lv_font_montserrat_18, 0);
-  lv_obj_set_style_text_font(face->line3, &lv_font_montserrat_18, 0);
-  lv_obj_set_width(face->title, CENTER_WIDTH);
-  lv_obj_set_width(face->line1, CENTER_WIDTH);
-  lv_obj_set_width(face->line2, CENTER_WIDTH);
-  lv_obj_set_width(face->line3, CENTER_WIDTH);
+  const lv_font_t *line_font = large ? &lv_font_montserrat_28 : &lv_font_montserrat_18;
+  lv_obj_set_style_text_font(face->line1, line_font, 0);
+  lv_obj_set_style_text_font(face->line2, line_font, 0);
+  lv_obj_set_style_text_font(face->line3, line_font, 0);
+  lv_obj_set_width(face->title, center_width);
+  lv_obj_set_width(face->line1, center_width);
+  lv_obj_set_width(face->line2, center_width);
+  lv_obj_set_width(face->line3, center_width);
 }
 
 static void create_face(lv_display_t *disp, lv_color_t accent, const ui_bar_label_pad_t *label_pad,
                         ui_face_t *out) {
   lv_display_set_default(disp);
+  const int width = lv_display_get_horizontal_resolution(disp);
+  const int height = lv_display_get_vertical_resolution(disp);
   lv_obj_t *scr = lv_display_get_screen_active(disp);
   style_screen(scr);
   out->root = scr;
-  create_side_arc(scr, -label_pad->left_x, accent, &out->left_bar);
-  create_side_arc(scr, label_pad->right_x, accent, &out->right_bar);
-  create_center(scr, out);
+  create_side_arc(scr, width, height, -ui_scale_px(width, height, label_pad->left_x), accent,
+                  &out->left_bar);
+  create_side_arc(scr, width, height, ui_scale_px(width, height, label_pad->right_x), accent,
+                  &out->right_bar);
+  create_center(scr, width, height, out);
 }
 
 void ui_face_create(lv_display_t *display, provider_id_t provider, ui_face_t *out) {
