@@ -1,5 +1,5 @@
-# Dual 240x240 GC9A01 on classic ESP32 (WROOM).
-# Partial LVGL buffers stay in internal RAM.
+# Default: two 240x240 GC9A01 panels on classic ESP32 (WROOM).
+# Configure screen slot pins in menuconfig; enable PSRAM for boards that have it.
 
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y

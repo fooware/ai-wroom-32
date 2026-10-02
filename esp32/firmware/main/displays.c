@@ -1,80 +1,150 @@
 #include "displays.h"
 
+#include <string.h>
+
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_gc9a01.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_log.h"
 #include "esp_lvgl_port.h"
-#include "ui.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "displays";
 
-/* Pinout from rxh-wroom-32 dual-display/src/displays.hpp */
-#define PIN_SCLK 5
-#define PIN_MOSI 18
-#define PIN_DC 19
-#define PIN_CS_A 22
-#define PIN_RST_A 23
-#define PIN_CS_B 15
-#define PIN_RST_B 4
-
 #define LCD_HOST SPI3_HOST
-#define LVGL_BUF_LINES 40
+#define LVGL_BUF_LINES 20
+#define LCD_SPI_HZ (20 * 1000 * 1000)
+#define LCD_HOST_DEVICE_LIMIT 3
 
-static esp_err_t add_panel(gpio_num_t cs, gpio_num_t rst, const char *name, lv_display_t **out) {
-  esp_lcd_panel_io_handle_t io = NULL;
-  const esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(cs, PIN_DC, NULL, NULL);
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &io), TAG, "io %s",
-                      name);
+typedef struct {
+  esp_lcd_panel_io_handle_t io;
+  esp_lcd_panel_handle_t panel;
+  lv_display_t *display;
+} display_instance_t;
 
-  esp_lcd_panel_handle_t panel = NULL;
+/* All CS pins must be inactive before a shared reset is asserted. */
+static void reset_panels(const screen_config_t *config) {
+  for (size_t i = 0; i < config->count; ++i) {
+    const screen_pins_t *pins = screen_pins(i);
+    gpio_set_level(pins->cs, 1);
+    gpio_set_direction(pins->cs, GPIO_MODE_OUTPUT);
+    if (pins->reset >= 0) {
+      gpio_set_level(pins->reset, 1);
+      gpio_set_direction(pins->reset, GPIO_MODE_OUTPUT);
+    }
+  }
+  vTaskDelay(pdMS_TO_TICKS(1));
+  for (size_t i = 0; i < config->count; ++i) {
+    const screen_pins_t *pins = screen_pins(i);
+    if (pins->reset >= 0) gpio_set_level(pins->reset, 0);
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  for (size_t i = 0; i < config->count; ++i) {
+    const screen_pins_t *pins = screen_pins(i);
+    if (pins->reset >= 0) gpio_set_level(pins->reset, 1);
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+static void cleanup(display_instance_t *instances, size_t count, bool lvgl_initialized,
+                    bool bus_initialized) {
+  for (size_t i = 0; i < count; ++i) {
+    if (instances[i].display) lvgl_port_remove_disp(instances[i].display);
+    if (instances[i].panel) esp_lcd_panel_del(instances[i].panel);
+    if (instances[i].io) esp_lcd_panel_io_del(instances[i].io);
+  }
+  if (lvgl_initialized) lvgl_port_deinit();
+  if (bus_initialized) spi_bus_free(LCD_HOST);
+}
+
+static esp_err_t add_gc9a01(const screen_type_t *type, const screen_pins_t *pins,
+                            display_instance_t *instance) {
+  esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(pins->cs, screen_dc(), NULL, NULL);
+  io_config.pclk_hz = LCD_SPI_HZ;
+  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &instance->io),
+                      TAG, "new SPI IO");
   const esp_lcd_panel_dev_config_t panel_config = {
-      .reset_gpio_num = rst,
+      .reset_gpio_num = -1, /* reset_panels() handles individual and shared reset lines once. */
       .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
       .bits_per_pixel = 16,
   };
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_gc9a01(io, &panel_config, &panel), TAG, "panel %s", name);
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), TAG, "reset %s", name);
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel), TAG, "init %s", name);
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(panel, true), TAG, "invert %s", name);
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(panel, true), TAG, "on %s", name);
+  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_gc9a01(instance->io, &panel_config, &instance->panel), TAG,
+                      "new GC9A01 panel");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(instance->panel), TAG, "GC9A01 software reset");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_init(instance->panel), TAG, "GC9A01 init");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(instance->panel, true), TAG, "GC9A01 invert");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(instance->panel, true), TAG, "GC9A01 on");
 
-  const lvgl_port_display_cfg_t disp_cfg = {
-      .io_handle = io,
-      .panel_handle = panel,
-      .buffer_size = UI_HRES * LVGL_BUF_LINES,
+  const uint32_t partial_pixels = type->width * LVGL_BUF_LINES;
+  /* LVGL draws into PSRAM when available; the port copies each partial strip
+   * into its internal DMA transfer buffer before sending it on the shared bus. */
+  const bool psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) != 0;
+  const lvgl_port_display_cfg_t display_config = {
+      .io_handle = instance->io,
+      .panel_handle = instance->panel,
+      .buffer_size = partial_pixels,
+      .trans_size = partial_pixels,
       .double_buffer = false,
-      .hres = UI_HRES,
-      .vres = UI_VRES,
+      .hres = type->width,
+      .vres = type->height,
       .monochrome = false,
       .color_format = LV_COLOR_FORMAT_RGB565,
-      .rotation =
-          {
-              .swap_xy = false,
-              .mirror_x = true,
-              .mirror_y = false,
-          },
-      .flags =
-          {
-              .buff_dma = true,
-              .buff_spiram = false,
-              .swap_bytes = true,
-          },
+      .rotation = {.swap_xy = false, .mirror_x = true, .mirror_y = false},
+      .flags = {.buff_dma = !psram, .buff_spiram = psram, .swap_bytes = true},
   };
-  *out = lvgl_port_add_disp(&disp_cfg);
-  return *out != NULL ? ESP_OK : ESP_FAIL;
+  instance->display = lvgl_port_add_disp(&display_config);
+  return instance->display ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-esp_err_t displays_init(lv_display_t **left, lv_display_t **right) {
-  const spi_bus_config_t bus_config = GC9A01_PANEL_BUS_SPI_CONFIG(PIN_SCLK, PIN_MOSI, UI_HRES * LVGL_BUF_LINES * 2);
-  ESP_RETURN_ON_ERROR(spi_bus_initialize(LCD_HOST, &bus_config, SPI_DMA_CH_AUTO), TAG, "spi bus");
+esp_err_t displays_init(const screen_config_t *config, lv_display_t **out) {
+  ESP_RETURN_ON_ERROR(screen_config_validate(config), TAG, "invalid screen configuration");
+  if (!out) return ESP_ERR_INVALID_ARG;
+  if (config->count > LCD_HOST_DEVICE_LIMIT) {
+    ESP_LOGE(TAG, "ESP32 SPI host supports at most %u panel IO devices", LCD_HOST_DEVICE_LIMIT);
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  memset(out, 0, config->count * sizeof(*out));
 
-  const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-  ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "lvgl port");
+  size_t max_width = 0;
+  for (size_t i = 0; i < config->count; ++i) {
+    const screen_type_t *type = screen_type(config->screens[i].type);
+    if (!type || config->screens[i].type != 0) {
+      ESP_LOGE(TAG, "screen %u uses an unsupported controller", (unsigned)(i + 1));
+      return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (type->width > max_width) max_width = type->width;
+  }
 
-  ESP_RETURN_ON_ERROR(add_panel(PIN_CS_A, PIN_RST_A, "A", left), TAG, "display A");
-  ESP_RETURN_ON_ERROR(add_panel(PIN_CS_B, PIN_RST_B, "B", right), TAG, "display B");
+  const spi_bus_config_t bus_config = GC9A01_PANEL_BUS_SPI_CONFIG(
+      screen_sclk(), screen_mosi(), max_width * LVGL_BUF_LINES * sizeof(uint16_t));
+  esp_err_t err = spi_bus_initialize(LCD_HOST, &bus_config, SPI_DMA_CH_AUTO);
+  if (err != ESP_OK) return err;
+  display_instance_t instances[SCREEN_MAX_COUNT] = {0};
+  reset_panels(config);
+
+  const lvgl_port_cfg_t lvgl_config = ESP_LVGL_PORT_INIT_CONFIG();
+  bool lvgl_initialized = false;
+  err = lvgl_port_init(&lvgl_config);
+  if (err != ESP_OK) goto fail;
+  lvgl_initialized = true;
+  for (size_t i = 0; i < config->count; ++i) {
+    err = add_gc9a01(screen_type(config->screens[i].type), screen_pins(i), &instances[i]);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "screen %u initialization failed (%s)", (unsigned)(i + 1), esp_err_to_name(err));
+      goto fail;
+    }
+    out[i] = instances[i].display;
+  }
+  ESP_LOGI(TAG, "initialized %u display(s) at %u Hz", (unsigned)config->count, LCD_SPI_HZ);
   return ESP_OK;
+
+fail:
+  cleanup(instances, config->count, lvgl_initialized, true);
+  memset(out, 0, config->count * sizeof(*out));
+  return err;
 }

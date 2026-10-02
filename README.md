@@ -73,7 +73,7 @@ Credentials are never printed. `fetch` output is JSON of this shape:
 }
 ```
 
-Erase the device's stored Wi-Fi (NVS only) so SoftAP provisioning runs again:
+Erase the device's stored Wi-Fi and screen configuration so SoftAP provisioning runs again:
 
 ```sh
 python3 computer/usage.py wifi-reset --serial /dev/cu.SLAB_USBtoUART
@@ -258,6 +258,52 @@ Payload:
 
 Placeholders are not usable credentials.
 
+## Screen configuration
+
+Create a secret-free local configuration for one to three screens. The wizard
+stores only the device address, the display type, provider names, and the
+explicit HTTP opt-in; it never stores a PIN or account credential.
+
+```sh
+python3 computer/usage.py config wizard --output device.json
+```
+
+The resulting version-1 JSON has this shape. Repeating a provider is allowed;
+the computer reads and sends that provider's credential once.
+
+```json
+{
+  "version": 1,
+  "device": {"base_url": "http://192.168.1.42"},
+  "screens": [
+    {"type": "gc9a01_240", "provider": "codex"},
+    {"type": "gc9a01_240", "provider": "cursor"},
+    {"type": "gc9a01_240", "provider": "claude"}
+  ],
+  "allow_insecure_http": true
+}
+```
+
+Apply the layout first, using the current pairing PIN shown by the device:
+
+```sh
+python3 computer/usage.py configure --config device.json --pin 4827
+```
+
+The device stores the screen layout in NVS and may respond that a reboot is
+required. Reboot it, read the new boot-scoped PIN, then provision credentials:
+
+```sh
+python3 computer/usage.py push --config device.json --pin 4827
+python3 computer/usage.py watch --config device.json --pin 4827 --interval 60
+```
+
+With `--config`, the tool posts the layout before reading any provider
+credentials. A reboot-required response stops there, so no credentials are
+sent with the old layout. The configuration chooses the providers; do not add
+`--providers`, `--url`, or `--serial` to those commands. `wifi-reset` clears
+this stored screen configuration as well as Wi-Fi.
+
 ## Security
 
 - Extracted credentials act as the signed-in user. Treat them as secrets.
@@ -275,8 +321,7 @@ Placeholders are not usable credentials.
 The default remains `codex,cursor`. Each provider has its own credential reader,
 usage adapter, and display metadata. A failure in one provider does not prevent
 successful providers from updating. Missing windows display `--`, not a full quota.
-The firmware's default two faces still show Codex and Cursor; screen mapping is
-introduced by the following screen-configuration change.
+Screen mapping is selected through the screen configuration described above.
 
 Claude requires **Claude Code signed in with the Claude subscription**, even if
 Claude for Mac is your usual client. On macOS the tool reads the
@@ -318,3 +363,16 @@ ctest --test-dir /tmp/ai-wroom-tests --output-on-failure
 The SDL simulator accepts `--claude` to preview a Claude face, `--meters` for
 meter previews, and `--smoke` to exit after a few frames (`SDL_VIDEODRIVER=dummy`
 works in a headless environment).
+
+Firmware wiring is set in `idf.py menuconfig` → **AI-O-Meter screen wiring**.
+All screens share SCLK, MOSI and DC; each ordered screen slot has its own CS.
+RST may be shared or set to `-1` for software reset. The third CS defaults to
+`-1` (unused): configure a valid free output GPIO before selecting three screens.
+The firmware rejects colliding pins and unwired slots. On a classic ESP32, avoid
+flash pins 6–11, and check your board's reserved PSRAM and boot-strapping pins.
+
+The display manager uses partial 20-line RGB565 buffers, rather than a full
+framebuffer per screen. If PSRAM is enabled and available, LVGL draws there and
+the port copies strips into internal DMA buffers. DMA sends one panel's strip
+at a time on the shared SPI bus. This release supports at most three panels;
+PSRAM capacity alone does not increase that limit.

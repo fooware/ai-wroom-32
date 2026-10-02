@@ -1,61 +1,52 @@
 #include "ui.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define STAR_CENTER_Y 120
-#define STAR_RESET_X 230
-#define STAR_RESET_Y 118
 #define STAR_TICK_MS 33
 #define COLOR_HINT lv_color_hex(0xa8b4c0)
 #define COLOR_WARNING lv_color_hex(0xffb020)
 /* Each glass carries the accent of the service whose meter it becomes. */
-#define COLOR_CODEX lv_color_hex(0x00a878)
-#define COLOR_CURSOR lv_color_hex(0xf54e00)
 
 /* Geometric spacing keeps each star at a different point in its travel time. */
 static const uint8_t INITIAL_DISTANCE[UI_STAR_COUNT] = {3, 6, 11, 20, 37, 69, 128};
 
-static uint32_t next_random(ui_attraction_t *ui) {
-  uint32_t x = ui->rng;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  ui->rng = x != 0 ? x : 0x6d2b79f5U;
-  return ui->rng;
+static uint32_t next_random(ui_attraction_screen_t *screen) {
+  uint32_t x = screen->rng;
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  screen->rng = x ? x : 0x6d2b79f5U;
+  return screen->rng;
 }
 
-static void reset_star(ui_attraction_t *ui, ui_star_t *star, int32_t distance) {
-  const int32_t slope = star->slope_pct + (int32_t)(next_random(ui) % 13) - 6;
-  star->x_q8 = (star->side == 0 ? -distance : distance) << 8;
-  star->y_q8 = (slope * distance * STAR_RESET_Y / (100 * STAR_RESET_X)) << 8;
+static void reset_star(ui_attraction_screen_t *screen, ui_star_t *star, int32_t distance) {
+  int slope = star->slope_pct + (int)(next_random(screen) % 13) - 6;
+  star->x_q8 = (star->side ? distance : -distance) * 256;
+  star->y_q8 = slope * distance * 256 / 100;
 }
 
-static void position_star(ui_star_t *star) {
-  const int32_t x = star->x_q8 >> 8;
-  const int32_t y = star->y_q8 >> 8;
-  const int32_t local_x = star->side == 0 ? UI_HRES + x : x;
-  const int32_t distance = x < 0 ? -x : x;
-  const int32_t size = distance > 150 ? 4 : (distance > 75 ? 3 : 2);
-
+static void position_star(ui_attraction_screen_t *screen, ui_star_t *star) {
+  int x = star->x_q8 / 256;
+  int y = star->y_q8 / 256;
+  int distance = x < 0 ? -x : x;
+  int size = distance > screen->width / 3 ? 3 : 2;
   lv_obj_set_size(star->dot, size, size);
-  lv_obj_set_pos(star->dot, local_x - size / 2, STAR_CENTER_Y + y - size / 2);
-  lv_obj_set_style_opa(star->dot, distance > 100 ? LV_OPA_COVER : LV_OPA_70, 0);
+  lv_obj_set_pos(star->dot, screen->width / 2 + x - size / 2,
+                screen->height / 2 + y - size / 2);
 }
 
 static void starfield_tick(lv_timer_t *timer) {
   ui_attraction_t *ui = lv_timer_get_user_data(timer);
-  for (size_t i = 0; i < UI_STAR_COUNT; ++i) {
-    ui_star_t *star = &ui->stars[i];
-    star->x_q8 += star->x_q8 / 28;
-    star->y_q8 += star->y_q8 / 28;
-
-    const int32_t x = star->x_q8 >> 8;
-    const int32_t y = star->y_q8 >> 8;
-    if ((x < 0 ? -x : x) > STAR_RESET_X || (y < 0 ? -y : y) > STAR_RESET_Y) {
-      reset_star(ui, star, 3);
+  for (size_t n = 0; n < ui->count; ++n) {
+    ui_attraction_screen_t *screen = &ui->screens[n];
+    for (size_t i = 0; i < UI_STAR_COUNT; ++i) {
+      ui_star_t *star = &screen->stars[i];
+      star->x_q8 += star->x_q8 / 28;
+      star->y_q8 += star->y_q8 / 28;
+      if (abs(star->x_q8 / 256) > screen->width / 2 ||
+          abs(star->y_q8 / 256) > screen->height / 2) reset_star(screen, star, 3);
+      position_star(screen, star);
     }
-    position_star(star);
   }
 }
 
@@ -116,48 +107,46 @@ void ui_attraction_set_status(ui_attraction_t *ui, const char *status) {
   lv_obj_set_style_text_color(ui->hint, COLOR_WARNING, 0);
 }
 
-void ui_attraction_create(lv_display_t *left_disp, lv_display_t *right_disp,
-                          const char *ip_address, uint16_t pin, uint32_t random_seed,
-                          ui_attraction_t *out) {
+void ui_attraction_create(lv_display_t *const *displays, const provider_id_t *providers,
+                          size_t count, const char *ip_address, uint16_t pin,
+                          uint32_t random_seed, ui_attraction_t *out) {
   memset(out, 0, sizeof(*out));
-  out->rng = random_seed != 0 ? random_seed : 0x6d2b79f5U;
-
-  lv_display_set_default(left_disp);
-  out->left_root = lv_display_get_screen_active(left_disp);
-  style_screen(out->left_root);
-
-  lv_display_set_default(right_disp);
-  out->right_root = lv_display_get_screen_active(right_disp);
-  style_screen(out->right_root);
-
-  for (size_t i = 0; i < UI_STAR_COUNT; ++i) {
-    ui_star_t *star = &out->stars[i];
-    const uint8_t side = i & 1U;
-    const uint8_t lane = i / 2;
-    const uint8_t lane_count = side == 0 ? (UI_STAR_COUNT + 1) / 2 : UI_STAR_COUNT / 2;
-    lv_obj_t *parent = side == 0 ? out->left_root : out->right_root;
-    star->side = side;
-    star->slope_pct = lane_count > 1 ? -90 + (180 * lane) / (lane_count - 1) : 0;
-    star->dot = lv_obj_create(parent);
-    lv_obj_remove_style_all(star->dot);
-    lv_obj_set_style_bg_color(star->dot, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(star->dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(star->dot, LV_RADIUS_CIRCLE, 0);
-    reset_star(out, star, INITIAL_DISTANCE[i]);
-    position_star(star);
+  if (!displays || !providers || count < 1 || count > UI_MAX_SCREENS) return;
+  out->count = count;
+  for (size_t n = 0; n < count; ++n) {
+    ui_attraction_screen_t *screen = &out->screens[n];
+    screen->rng = (random_seed + (uint32_t)n * 2654435761U) | 1U;
+    screen->width = lv_display_get_horizontal_resolution(displays[n]);
+    screen->height = lv_display_get_vertical_resolution(displays[n]);
+    screen->root = lv_display_get_screen_active(displays[n]);
+    style_screen(screen->root);
+    for (size_t i = 0; i < UI_STAR_COUNT; ++i) {
+      ui_star_t *star = &screen->stars[i];
+      star->side = i & 1U;
+      star->slope_pct = -90 + (int)i * 180 / (UI_STAR_COUNT - 1);
+      star->dot = lv_obj_create(screen->root);
+      lv_obj_remove_style_all(star->dot);
+      lv_obj_set_style_bg_color(star->dot, lv_color_white(), 0);
+      lv_obj_set_style_bg_opa(star->dot, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(star->dot, LV_RADIUS_CIRCLE, 0);
+      reset_star(screen, star, INITIAL_DISTANCE[i] / 2 + 1);
+      position_star(screen, star);
+    }
+    const provider_info_t *info = provider_info(providers[n]);
+    lv_color_t accent = lv_color_hex(info ? info->accent : 0x00a878);
+    if (n + 1 == count) {
+      out->hint = make_text(screen->root, "", &lv_font_montserrat_16, COLOR_HINT,
+                            LV_ALIGN_CENTER, -58, 168);
+      out->ip = make_text(screen->root, "", &lv_font_montserrat_28, accent,
+                          LV_ALIGN_CENTER, 4, 0);
+      out->pin = make_text(screen->root, "", &lv_font_montserrat_28, accent,
+                           LV_ALIGN_CENTER, 40, 0);
+    } else {
+      make_text(screen->root, "AI-O-\nMETER", &lv_font_montserrat_48, accent,
+                 LV_ALIGN_CENTER, -4, 200);
+    }
   }
-
-  make_text(out->left_root, "AI-O-\nMETER", &lv_font_montserrat_48,
-            COLOR_CODEX, LV_ALIGN_CENTER, -4, 200);
-
-  out->hint = make_text(out->right_root, "", &lv_font_montserrat_16,
-                        COLOR_HINT, LV_ALIGN_CENTER, -58, 168);
-  out->ip = make_text(out->right_root, "", &lv_font_montserrat_28,
-                      COLOR_CURSOR, LV_ALIGN_CENTER, 4, 0);
-  out->pin = make_text(out->right_root, "", &lv_font_montserrat_28,
-                       COLOR_CURSOR, LV_ALIGN_CENTER, 40, 0);
   ui_attraction_set_connection(out, ip_address, pin);
-
   out->timer = lv_timer_create(starfield_tick, STAR_TICK_MS, out);
 }
 

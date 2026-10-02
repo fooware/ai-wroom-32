@@ -24,15 +24,23 @@ typedef struct {
   uint8_t side;
 } ui_star_t;
 
+#define UI_MAX_SCREENS 3
+
 typedef struct {
-  lv_obj_t *left_root;
-  lv_obj_t *right_root;
+  lv_obj_t *root;
+  ui_star_t stars[UI_STAR_COUNT];
+  uint32_t rng;
+  int width;
+  int height;
+} ui_attraction_screen_t;
+
+typedef struct {
+  ui_attraction_screen_t screens[UI_MAX_SCREENS];
+  size_t count;
   lv_obj_t *hint;
   lv_obj_t *ip;
   lv_obj_t *pin;
   lv_timer_t *timer;
-  ui_star_t stars[UI_STAR_COUNT];
-  uint32_t rng;
 } ui_attraction_t;
 
 typedef struct {
@@ -54,10 +62,10 @@ typedef struct {
 void ui_face_create(lv_display_t *display, provider_id_t provider, ui_face_t *out);
 void ui_provider_apply(ui_face_t *face, provider_id_t provider, const provider_data_t *data);
 
-/* Show one animated 480x240 starfield split across the two displays. */
-void ui_attraction_create(lv_display_t *left_disp, lv_display_t *right_disp,
-                          const char *ip_address, uint16_t pin, uint32_t random_seed,
-                          ui_attraction_t *out);
+/* Screen order is physical slot order. The last screen shows pairing details. */
+void ui_attraction_create(lv_display_t *const *displays, const provider_id_t *providers,
+                          size_t count, const char *ip_address, uint16_t pin,
+                          uint32_t random_seed, ui_attraction_t *out);
 void ui_attraction_set_connection(ui_attraction_t *ui, const char *ip_address, uint16_t pin);
 /* Replace the connection line with a fetch failure reason, in place of CONNECTED. */
 void ui_attraction_set_status(ui_attraction_t *ui, const char *status);

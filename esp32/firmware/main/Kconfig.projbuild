@@ -1,0 +1,38 @@
+menu "AI-O-Meter screen wiring"
+config METER_SCLK
+    int "Shared SCLK GPIO"
+    default 5
+
+config METER_MOSI
+    int "Shared MOSI GPIO"
+    default 18
+
+config METER_DC
+    int "Shared DC GPIO"
+    default 19
+
+config METER_SCREEN_1_CS
+    int "Screen slot 1 CS GPIO (-1 = unused slot)"
+    default 22
+
+config METER_SCREEN_1_RST
+    int "Screen slot 1 RST GPIO (-1 = no reset pin)"
+    default 23
+
+config METER_SCREEN_2_CS
+    int "Screen slot 2 CS GPIO (-1 = unused slot)"
+    default 15
+
+config METER_SCREEN_2_RST
+    int "Screen slot 2 RST GPIO (-1 = no reset pin)"
+    default 4
+
+config METER_SCREEN_3_CS
+    int "Screen slot 3 CS GPIO (-1 = unused slot)"
+    default -1
+
+config METER_SCREEN_3_RST
+    int "Screen slot 3 RST GPIO (-1 = no reset pin)"
+    default -1
+
+endmenu

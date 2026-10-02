@@ -1,4 +1,5 @@
 #include "credential_server.h"
+#include "screen_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,13 +175,13 @@ static bool parse_credentials(const char *body, ram_credentials_t *credentials) 
   return valid;
 }
 
-static esp_err_t credentials_post(httpd_req_t *request) {
+static bool authorize_request(httpd_req_t *request) {
   xSemaphoreTake(state.lock, portMAX_DELAY);
   bool locked = state.locked;
   xSemaphoreGive(state.lock);
   if (locked) {
     send_json(request, "423 Locked", "{\"ok\":false,\"error\":\"locked\"}");
-    return ESP_OK;
+    return false;
   }
 
   if (!valid_pin(request)) {
@@ -200,8 +201,14 @@ static esp_err_t credentials_post(httpd_req_t *request) {
       send_json(request, "401 Unauthorized",
                 "{\"ok\":false,\"error\":\"incorrect_pin\"}");
     }
-    return ESP_OK;
+    return false;
   }
+
+  return true;
+}
+
+static esp_err_t credentials_post(httpd_req_t *request) {
+  if (!authorize_request(request)) return ESP_OK;
 
   if (request->content_len <= 0 || request->content_len > MAX_BODY_BYTES) {
     send_json(request, "413 Payload Too Large",
@@ -259,6 +266,46 @@ static esp_err_t credentials_post(httpd_req_t *request) {
   return ESP_OK;
 }
 
+
+static esp_err_t config_post(httpd_req_t *request) {
+  if (!authorize_request(request)) return ESP_OK;
+  if (request->content_len <= 0 || request->content_len > 4096) {
+    send_json(request, "413 Payload Too Large", "{\"ok\":false,\"error\":\"invalid_size\"}");
+    return ESP_OK;
+  }
+  char *body = calloc(1, (size_t)request->content_len + 1);
+  if (!body) { send_json(request, "500 Internal Server Error", "{\"ok\":false,\"error\":\"out_of_memory\"}"); return ESP_OK; }
+  int received = 0;
+  while (received < request->content_len) {
+    int n = httpd_req_recv(request, body + received, request->content_len - received);
+    if (n <= 0) { free(body); return ESP_FAIL; }
+    received += n;
+  }
+  screen_config_t incoming;
+  esp_err_t err = screen_config_parse(body, &incoming);
+  free(body);
+  if (err != ESP_OK) {
+    send_json(request, "400 Bad Request", "{\"ok\":false,\"error\":\"invalid_screen_config_or_unwired_slot\"}");
+    return ESP_OK;
+  }
+  const screen_config_t *active = screen_config_active();
+  bool changed = incoming.count != active->count;
+  for (size_t i = 0; !changed && i < incoming.count; ++i) {
+    changed = incoming.screens[i].type != active->screens[i].type ||
+              incoming.screens[i].provider != active->screens[i].provider;
+  }
+  err = screen_config_save(&incoming);
+  if (err != ESP_OK) {
+    send_json(request, "500 Internal Server Error", "{\"ok\":false,\"error\":\"config_save_failed\"}");
+    return ESP_OK;
+  }
+  xSemaphoreTake(state.lock, portMAX_DELAY);
+  state.pin_failures = 0;
+  xSemaphoreGive(state.lock);
+  send_json(request, "200 OK", changed ? "{\"ok\":true,\"reboot_required\":true}" : "{\"ok\":true,\"reboot_required\":false}");
+  return ESP_OK;
+}
+
 esp_err_t credential_server_start(ui_attraction_t *ui, const char *ip_address,
                                   uint16_t pairing_pin) {
   state.ui = ui;
@@ -302,6 +349,13 @@ esp_err_t credential_server_start(ui_attraction_t *ui, const char *ip_address,
       .handler = credentials_post,
   };
   err = httpd_register_uri_handler(state.server, &endpoint);
+  if (err != ESP_OK) {
+    httpd_stop(state.server);
+    state.server = NULL;
+    return err;
+  }
+  const httpd_uri_t config_endpoint = {.uri = "/api/config", .method = HTTP_POST, .handler = config_post};
+  err = httpd_register_uri_handler(state.server, &config_endpoint);
   if (err != ESP_OK) {
     httpd_stop(state.server);
     state.server = NULL;
