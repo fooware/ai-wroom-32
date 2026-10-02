@@ -48,20 +48,20 @@ typedef struct {
 } gc9b72_panel_t;
 
 /*
- * Functional names for the extended-command gate and gamma controls come from
- * guillermozuur-design/gc9b72's INIT_SEQUENCE.md, revision
- * 7b3d6dd1c654ab22e4060409923e75224473f696 (see GC9B72-REGISTERS.md).
- * That driver documents their functions, but does not supply manufacturer
- * register mnemonics or gamma-bank polarity/channel definitions. The ordinal
- * suffixes distinguish commands; they do not imply a bitfield interpretation.
- * Remaining VENDOR_REG entries have no identified function in the sources we
- * inspected. Standard DCS names are supplied by ESP-IDF.
+ * Semantic names below are derived from the sibling GC9B71 datasheet v1.1:
+ * power controls C3/C4/C9 (pp. 207-209), internal-register enable FE/EF
+ * (pp. 210-211), gamma F0-F3 (pp. 212-219), inversion EC (p. 204), and
+ * tearing-effect width B4 (p. 202). These are inferred GC9B72 meanings, not
+ * proof that the two chips have identical parameter layouts. See the xboot
+ * versus datasheet comparison in GC9B72-REGISTERS.md for mismatches.
+ * EE has no definition in that sheet; its earlier "lock" name is unverified.
+ * Remaining VENDOR_REG entries have unidentified functions.
  */
 enum {
-  GC9B72_PIXEL_FORMAT_RGB565 = 0x05,
-  GC9B72_EXTENDED_COMMAND_LOCK = 0xEE,
-  GC9B72_EXTENDED_COMMAND_UNLOCK_2 = 0xEF,
-  GC9B72_EXTENDED_COMMAND_UNLOCK_1 = 0xFE,
+  GC9B72_PIXEL_FORMAT_RGB565 = 0x05, /* xboot value; GC9B71 p. 181 agrees on DBI[2:0], not upper bits. */
+  GC9B72_VENDOR_REG_EE = 0xEE,
+  GC9B72_INTER_REGISTER_ENABLE_2 = 0xEF,
+  GC9B72_INTER_REGISTER_ENABLE_1 = 0xFE,
   GC9B72_VENDOR_REG_60 = 0x60,
   GC9B72_VENDOR_REG_61 = 0x61,
   GC9B72_VENDOR_REG_62 = 0x62,
@@ -99,18 +99,18 @@ enum {
   GC9B72_VENDOR_REG_99 = 0x99,
   GC9B72_VENDOR_REG_AA = 0xAA,
   GC9B72_VENDOR_REG_AC = 0xAC,
-  GC9B72_VENDOR_REG_B4 = 0xB4,
+  GC9B72_TEARING_EFFECT_WIDTH_CONTROL = 0xB4,
   GC9B72_VENDOR_REG_B5 = 0xB5,
-  GC9B72_VENDOR_REG_C3 = 0xC3,
-  GC9B72_VENDOR_REG_C4 = 0xC4,
-  GC9B72_VENDOR_REG_C9 = 0xC9,
+  GC9B72_POWER_CONTROL_2 = 0xC3, /* GC9B71: positive grayscale reference adjustment. */
+  GC9B72_POWER_CONTROL_3 = 0xC4, /* GC9B71: negative grayscale reference adjustment. */
+  GC9B72_POWER_CONTROL_4 = 0xC9, /* GC9B71: shared grayscale reference adjustment. */
   GC9B72_VENDOR_REG_CB = 0xCB,
   GC9B72_VENDOR_REG_EB = 0xEB,
-  GC9B72_VENDOR_REG_EC = 0xEC,
-  GC9B72_GAMMA_CONTROL_1 = 0xF0,
-  GC9B72_GAMMA_CONTROL_2 = 0xF1,
-  GC9B72_GAMMA_CONTROL_3 = 0xF2,
-  GC9B72_GAMMA_CONTROL_4 = 0xF3,
+  GC9B72_INVERSION_CONTROL = 0xEC,
+  GC9B72_SET_GAMMA1 = 0xF0, /* GC9B71: first negative-polarity gamma block. */
+  GC9B72_SET_GAMMA2 = 0xF1, /* GC9B71: second negative-polarity gamma block. */
+  GC9B72_SET_GAMMA3 = 0xF2, /* GC9B71: first positive-polarity gamma block. */
+  GC9B72_SET_GAMMA4 = 0xF3, /* GC9B71: second positive-polarity gamma block. */
   GC9B72_VENDOR_REG_F6 = 0xF6,
   GC9B72_VENDOR_REG_F9 = 0xF9,
   GC9B72_VENDOR_REG_FB = 0xFB,
@@ -130,8 +130,8 @@ enum {
  * until validated on the panel.
  */
 static const gc9b72_init_command_t default_init[] = {
-    /* Unlock the extended command set before writing the vendor setup registers. */
-    CMD0(GC9B72_EXTENDED_COMMAND_UNLOCK_1), CMD0(GC9B72_EXTENDED_COMMAND_UNLOCK_2),
+    /* FE followed by EF enables internal registers on GC9B71 (no parameters). */
+    CMD0(GC9B72_INTER_REGISTER_ENABLE_1), CMD0(GC9B72_INTER_REGISTER_ENABLE_2),
     CMD1(GC9B72_VENDOR_REG_80, 0x19), CMD1(GC9B72_VENDOR_REG_82, 0x09), CMD1(GC9B72_VENDOR_REG_83, 0x03),
     CMD1(GC9B72_VENDOR_REG_88, 0x00), CMD1(GC9B72_VENDOR_REG_89, 0x38), CMD1(GC9B72_VENDOR_REG_8A, 0x40),
     CMD1(GC9B72_VENDOR_REG_8B, 0x0A), CMD1(GC9B72_VENDOR_REG_8C, 0x00), CMD1(GC9B72_VENDOR_REG_81, 0xFF),
@@ -144,7 +144,8 @@ static const gc9b72_init_command_t default_init[] = {
     CMDN(GC9B72_VENDOR_REG_90, 4, 0x06,0x06,0x01,0x01), CMDN(GC9B72_VENDOR_REG_93, 3, 0x02,0xFF,0x00),
     CMD1(GC9B72_VENDOR_REG_CB, 0x02), CMD2(GC9B72_VENDOR_REG_FB, 0x00, 0x00), CMD1(GC9B72_VENDOR_REG_F6, 0xC0),
     CMDN(GC9B72_VENDOR_REG_6C, 7, 0x00,0x00,0x22,0x00,0xCC,0x04,0x58), CMD2(GC9B72_VENDOR_REG_AA, 0x0B, 0x00),
-    CMD1(GC9B72_VENDOR_REG_EC, 0x07), CMD1(GC9B72_VENDOR_REG_F9, 0x40), CMD2(GC9B72_VENDOR_REG_EB, 0x01, 0x67),
+    /* xboot uses 07; GC9B71 places DINV in bits 6:4, so do not reinterpret this byte. */
+    CMD1(GC9B72_INVERSION_CONTROL, 0x07), CMD1(GC9B72_VENDOR_REG_F9, 0x40), CMD2(GC9B72_VENDOR_REG_EB, 0x01, 0x67),
     CMDN(GC9B72_VENDOR_REG_74, 6, 0x01,0x60,0x00,0x00,0x00,0x00), CMDN(GC9B72_VENDOR_REG_B5, 3, 0x14,0x14,0x14),
     CMDN(GC9B72_VENDOR_REG_6E, 32, 0x0B,0x0B,0x09,0x09,0x13,0x13,0x11,0x11,0x16,0x15,0x01,0x04,0x00,0x0D,0x1D,0x00,
          0x00,0x1D,0x0D,0x00,0x04,0x08,0x15,0x16,0x12,0x12,0x14,0x14,0x0A,0x0A,0x0C,0x0C),
@@ -158,14 +159,15 @@ static const gc9b72_init_command_t default_init[] = {
     CMD1(LCD_CMD_COLMOD, GC9B72_PIXEL_FORMAT_RGB565), CMD1(LCD_CMD_MADCTL, 0x00),
 
     /* Vendor setup followed by the four documented gamma-control commands. */
-    CMD2(GC9B72_VENDOR_REG_7C, 0xB6, 0x29), CMD1(GC9B72_VENDOR_REG_AC, 0x40), CMD1(GC9B72_VENDOR_REG_C3, 0x1A),
-    CMD1(GC9B72_VENDOR_REG_C4, 0x24), CMD1(GC9B72_VENDOR_REG_C9, 0x2F),
-    CMDN(GC9B72_GAMMA_CONTROL_1, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_GAMMA_CONTROL_2, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
-    CMDN(GC9B72_GAMMA_CONTROL_3, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_GAMMA_CONTROL_4, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
-    CMD1(GC9B72_VENDOR_REG_B4, 0x0A), CMD1(LCD_CMD_TEON, 0x00),
+    CMD2(GC9B72_VENDOR_REG_7C, 0xB6, 0x29), CMD1(GC9B72_VENDOR_REG_AC, 0x40), CMD1(GC9B72_POWER_CONTROL_2, 0x1A),
+    CMD1(GC9B72_POWER_CONTROL_3, 0x24), CMD1(GC9B72_POWER_CONTROL_4, 0x2F),
+    CMDN(GC9B72_SET_GAMMA1, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_SET_GAMMA2, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
+    CMDN(GC9B72_SET_GAMMA3, 6, 0x11,0x17,0x08,0x06,0x05,0x38), CMDN(GC9B72_SET_GAMMA4, 6, 0x4D,0x72,0x72,0x2D,0x34,0x8F),
+    /* GC9B71 specifies width + polarity (two bytes); retain xboot's one-byte write. */
+    CMD1(GC9B72_TEARING_EFFECT_WIDTH_CONTROL, 0x0A), CMD1(LCD_CMD_TEON, 0x00),
 
-    /* Close the extended command set before leaving sleep and enabling pixels. */
-    CMD0(GC9B72_EXTENDED_COMMAND_UNLOCK_1), CMD0(GC9B72_EXTENDED_COMMAND_LOCK),
+    /* Preserve xboot's FE/EE sequence; GC9B71 does not document EE as a lock. */
+    CMD0(GC9B72_INTER_REGISTER_ENABLE_1), CMD0(GC9B72_VENDOR_REG_EE),
     CMD0_DELAY(LCD_CMD_SLPOUT, 120), CMD0_DELAY(LCD_CMD_DISPON, 20),
 };
 

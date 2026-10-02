@@ -393,9 +393,10 @@ specified by the module (there is no backlight PWM control in this firmware).
 SDO and TE are unused. The panel runs regular four-wire SPI at 20 MHz. The new
 driver preserves the attributed xboot GC9B72 startup sequence; physical color
 order, orientation, inversion and wiring still need verification when the panel
-arrives. Standard DCS commands and the documented extended-command/gamma functions are
-named. [The register source notes](esp32/firmware/main/GC9B72-REGISTERS.md) record
-the evidence and remaining gaps in the vendor register map.
+arrives. Standard DCS commands are named. Vendor names for internal-register enable,
+power, gamma, inversion and TE width are inferred from the sibling GC9B71
+datasheet. [The register comparison](esp32/firmware/main/GC9B72-REGISTERS.md) lists
+xboot and datasheet parameter counts, source pages, and known discrepancies.
 
 Preview mixed screens without hardware:
 
