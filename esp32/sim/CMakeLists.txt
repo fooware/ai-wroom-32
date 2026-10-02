@@ -33,6 +33,7 @@ endif()
 
 add_executable(sim
   main.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../ui/providers.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ui.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../ui/attraction.c
 )

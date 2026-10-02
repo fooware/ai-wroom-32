@@ -1,20 +1,16 @@
 #pragma once
 
+#include <stdint.h>
 #include "esp_err.h"
-#include "ui.h"
+#include "provider.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef void (*usage_meters_cb_t)(const ui_codex_data_t *codex, const ui_cursor_data_t *cursor);
+typedef void (*usage_update_cb_t)(provider_id_t id, const provider_data_t *data);
 typedef void (*usage_attraction_cb_t)(void);
-/* Short, screen-sized reason a usage fetch did not produce meters. */
-typedef void (*usage_status_cb_t)(const char *status);
-
-esp_err_t usage_poll_start(usage_meters_cb_t on_meters, usage_attraction_cb_t on_attraction,
-                           usage_status_cb_t on_status);
-
+esp_err_t usage_poll_start(usage_update_cb_t update_cb, usage_attraction_cb_t attraction_cb);
+void usage_poll_set_enabled(uint32_t provider_mask);
 #ifdef __cplusplus
 }
 #endif

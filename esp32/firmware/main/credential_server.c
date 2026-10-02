@@ -24,6 +24,7 @@ typedef struct {
   char *cursor_cookie;
   char *codex_access_token;
   char *codex_account_id;
+  char *claude_access_token;
 } ram_credentials_t;
 
 typedef struct {
@@ -36,8 +37,12 @@ typedef struct {
   uint16_t pairing_pin;
   uint8_t pin_failures;
   bool locked;
+  uint32_t generation;
+  int64_t expires_at_us;
   credential_listener_t listener;
 } credential_server_state_t;
+
+#define PROVIDER_MASK(id) (1u << (unsigned)(id))
 
 static credential_server_state_t state;
 
@@ -58,30 +63,39 @@ static void clear_credentials_locked(void) {
   wipe_and_free(&state.credentials.cursor_cookie);
   wipe_and_free(&state.credentials.codex_access_token);
   wipe_and_free(&state.credentials.codex_account_id);
+  wipe_and_free(&state.credentials.claude_access_token);
 }
 
-static void notify_listener(bool present) {
+static uint32_t available_mask_locked(void) {
+  uint32_t mask = 0;
+  if (state.credentials.cursor_cookie) mask |= PROVIDER_MASK(PROVIDER_CURSOR);
+  if (state.credentials.codex_access_token && state.credentials.codex_account_id)
+    mask |= PROVIDER_MASK(PROVIDER_CODEX);
+  if (state.credentials.claude_access_token) mask |= PROVIDER_MASK(PROVIDER_CLAUDE);
+  return mask;
+}
+
+static void notify_listener(uint32_t present) {
   if (state.listener != NULL) {
     state.listener(present);
   }
 }
 
-static void expiry_task(void *arg) {
-  (void)arg;
-  xSemaphoreTake(state.lock, portMAX_DELAY);
-  clear_credentials_locked();
-  xSemaphoreGive(state.lock);
-  ESP_LOGI(TAG, "Computer credential lease expired; returning to attraction mode");
-  notify_listener(false);
-  vTaskDelete(NULL);
+static void expire_locked(void) {
+  if (state.expires_at_us && esp_timer_get_time() >= state.expires_at_us) {
+    clear_credentials_locked();
+    state.expires_at_us = 0;
+    state.generation++;
+  }
 }
 
 static void expiry_timer_callback(void *arg) {
   (void)arg;
-  /* The listener rebuilds both screens, so this task needs more than a hint. */
-  if (xTaskCreate(expiry_task, "cred_expire", 5120, NULL, 5, NULL) != pdPASS) {
-    ESP_LOGE(TAG, "Could not start credential expiry task");
-  }
+  xSemaphoreTake(state.lock, portMAX_DELAY);
+  expire_locked();
+  uint32_t available = available_mask_locked();
+  xSemaphoreGive(state.lock);
+  notify_listener(available);
 }
 
 static void send_json(httpd_req_t *request, const char *status, const char *body) {
@@ -114,15 +128,26 @@ static bool valid_pin(httpd_req_t *request) {
 static bool duplicate_json_string(cJSON *parent, const char *name, char **out) {
   cJSON *item = cJSON_GetObjectItemCaseSensitive(parent, name);
   if (!cJSON_IsString(item) || item->valuestring == NULL ||
-      item->valuestring[0] == '\0') {
+      item->valuestring[0] == '\0' || strpbrk(item->valuestring, "\r\n") != NULL) {
     return false;
   }
   *out = strdup(item->valuestring);
   return *out != NULL;
 }
 
+static void wipe_json(cJSON *item) {
+  for (; item; item = item->next) {
+    if (item->valuestring) {
+      volatile char *p = item->valuestring;
+      size_t n = strlen(item->valuestring);
+      while (n--) *p++ = 0;
+    }
+    wipe_json(item->child);
+  }
+}
+
 static bool parse_credentials(const char *body, ram_credentials_t *credentials) {
-  cJSON *root = cJSON_Parse(body);
+  cJSON *root = cJSON_ParseWithOpts(body, NULL, true);
   if (root == NULL) {
     return false;
   }
@@ -130,19 +155,21 @@ static bool parse_credentials(const char *body, ram_credentials_t *credentials) 
   cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
   cJSON *cursor = cJSON_GetObjectItemCaseSensitive(root, "cursor");
   cJSON *codex = cJSON_GetObjectItemCaseSensitive(root, "codex");
-  bool valid = cJSON_IsNumber(version) && version->valueint == 1 &&
-               cJSON_IsObject(cursor) && cJSON_IsObject(codex) &&
-               duplicate_json_string(cursor, "cookie",
-                                     &credentials->cursor_cookie) &&
-               duplicate_json_string(codex, "access_token",
-                                     &credentials->codex_access_token) &&
-               duplicate_json_string(codex, "account_id",
-                                     &credentials->codex_account_id);
+  cJSON *claude = cJSON_GetObjectItemCaseSensitive(root, "claude");
+  bool valid = cJSON_IsNumber(version) && version->valuedouble == 1 &&
+               ((cursor == NULL) || (cJSON_IsObject(cursor) && duplicate_json_string(cursor, "cookie", &credentials->cursor_cookie))) &&
+               ((codex == NULL) || (cJSON_IsObject(codex) && duplicate_json_string(codex, "access_token", &credentials->codex_access_token) && duplicate_json_string(codex, "account_id", &credentials->codex_account_id))) &&
+               ((claude == NULL) || (cJSON_IsObject(claude) && duplicate_json_string(claude, "access_token", &credentials->claude_access_token)));
+  valid = valid && (credentials->cursor_cookie != NULL ||
+                    (credentials->codex_access_token != NULL && credentials->codex_account_id != NULL) ||
+                    credentials->claude_access_token != NULL);
+  wipe_json(root);
   cJSON_Delete(root);
   if (!valid) {
     wipe_and_free(&credentials->cursor_cookie);
     wipe_and_free(&credentials->codex_access_token);
     wipe_and_free(&credentials->codex_account_id);
+    wipe_and_free(&credentials->claude_access_token);
   }
   return valid;
 }
@@ -194,6 +221,7 @@ static esp_err_t credentials_post(httpd_req_t *request) {
     int result = httpd_req_recv(request, body + received,
                                 request->content_len - received);
     if (result <= 0) {
+      memset(body, 0, (size_t)request->content_len);
       free(body);
       return result == HTTPD_SOCK_ERR_TIMEOUT ? ESP_ERR_TIMEOUT : ESP_FAIL;
     }
@@ -215,12 +243,15 @@ static esp_err_t credentials_post(httpd_req_t *request) {
   clear_credentials_locked();
   state.credentials = incoming;
   state.pin_failures = 0;
+  state.generation++;
+  state.expires_at_us = esp_timer_get_time() + CREDENTIAL_TTL_US;
+  uint32_t available = available_mask_locked();
   xSemaphoreGive(state.lock);
 
   esp_timer_stop(state.expiry_timer);
   esp_timer_start_once(state.expiry_timer, CREDENTIAL_TTL_US);
   ESP_LOGI(TAG, "Accepted RAM-only credentials; lease refreshed for one hour");
-  notify_listener(true);
+  notify_listener(available);
   char response[48];
   snprintf(response, sizeof(response), "{\"ok\":true,\"lease_seconds\":%d}",
            CREDENTIAL_TTL_SECONDS);
@@ -285,13 +316,13 @@ void credential_server_set_listener(credential_listener_t listener) {
   state.listener = listener;
 }
 
-bool credential_server_has_credentials(void) {
+uint32_t credential_server_available_mask(void) {
   if (state.lock == NULL) {
-    return false;
+    return 0;
   }
   xSemaphoreTake(state.lock, portMAX_DELAY);
-  bool present = state.credentials.cursor_cookie != NULL &&
-                 state.credentials.codex_access_token != NULL;
+  expire_locked();
+  uint32_t present = available_mask_locked();
   xSemaphoreGive(state.lock);
   return present;
 }
@@ -302,15 +333,19 @@ bool credential_server_snapshot(credential_snapshot_t *out) {
   }
   memset(out, 0, sizeof(*out));
   xSemaphoreTake(state.lock, portMAX_DELAY);
-  bool ok = state.credentials.cursor_cookie != NULL &&
-            state.credentials.codex_access_token != NULL &&
-            state.credentials.codex_account_id != NULL;
+  expire_locked();
+  bool ok = available_mask_locked() != 0;
   if (ok) {
-    out->cursor_cookie = strdup(state.credentials.cursor_cookie);
-    out->codex_access_token = strdup(state.credentials.codex_access_token);
-    out->codex_account_id = strdup(state.credentials.codex_account_id);
-    ok = out->cursor_cookie != NULL && out->codex_access_token != NULL &&
-         out->codex_account_id != NULL;
+    out->generation = state.generation;
+    out->available_mask = available_mask_locked();
+    if (state.credentials.cursor_cookie) out->cursor_cookie = strdup(state.credentials.cursor_cookie);
+    if (state.credentials.codex_access_token) out->codex_access_token = strdup(state.credentials.codex_access_token);
+    if (state.credentials.codex_account_id) out->codex_account_id = strdup(state.credentials.codex_account_id);
+    if (state.credentials.claude_access_token) out->claude_access_token = strdup(state.credentials.claude_access_token);
+    ok = (!state.credentials.cursor_cookie || out->cursor_cookie) &&
+         (!state.credentials.codex_access_token || out->codex_access_token) &&
+         (!state.credentials.codex_account_id || out->codex_account_id) &&
+         (!state.credentials.claude_access_token || out->claude_access_token);
   }
   xSemaphoreGive(state.lock);
   if (!ok) {
@@ -326,4 +361,15 @@ void credential_snapshot_free(credential_snapshot_t *snapshot) {
   wipe_and_free(&snapshot->cursor_cookie);
   wipe_and_free(&snapshot->codex_access_token);
   wipe_and_free(&snapshot->codex_account_id);
+  wipe_and_free(&snapshot->claude_access_token);
+}
+
+bool credential_server_snapshot_current(uint32_t generation, uint32_t provider_mask) {
+  if (state.lock == NULL) return false;
+  xSemaphoreTake(state.lock, portMAX_DELAY);
+  expire_locked();
+  bool current = state.expires_at_us != 0 && state.generation == generation &&
+                 (available_mask_locked() & provider_mask) == provider_mask;
+  xSemaphoreGive(state.lock);
+  return current;
 }
