@@ -15,3 +15,14 @@ set_source_files_properties(${CJSON_DIR}/cJSON.c PROPERTIES
   COMPILE_OPTIONS "-Wno-error=deprecated-declarations")
 target_link_options(provider_parser_test PRIVATE -fsanitize=address,undefined)
 add_test(NAME provider_parser_test COMMAND provider_parser_test)
+
+add_executable(screen_config_test screen_config_test.c
+  ../firmware/main/screen_config.c ../ui/providers.c ${CJSON_DIR}/cJSON.c)
+target_include_directories(screen_config_test PRIVATE
+  hostinclude ../firmware/main ../ui/include ${CJSON_DIR})
+target_compile_options(screen_config_test PRIVATE -Wall -Wextra -Werror
+  -fsanitize=address,undefined -fno-omit-frame-pointer)
+set_source_files_properties(${CJSON_DIR}/cJSON.c PROPERTIES
+  COMPILE_OPTIONS "-Wno-error=deprecated-declarations")
+target_link_options(screen_config_test PRIVATE -fsanitize=address,undefined)
+add_test(NAME screen_config_test COMMAND screen_config_test)

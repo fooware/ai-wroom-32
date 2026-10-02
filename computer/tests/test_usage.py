@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 
 MODULE = Path(__file__).parents[1] / "usage.py"
+sys.path.insert(0, str(MODULE.parent))
 SPEC = importlib.util.spec_from_file_location("usage", MODULE)
 assert SPEC and SPEC.loader
 usage = importlib.util.module_from_spec(SPEC)
@@ -157,6 +158,46 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("Codex", rendered)
         self.assertNotIn("Cursor", rendered)
         self.assertNotIn("Claude", rendered)
+
+    def test_configure_posts_screen_payload_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "device.json"
+            path.write_text(json.dumps({"version": 1, "device": {"base_url": "https://wroom.local"}, "screens": [{"type": "gc9a01_240", "provider": "claude"}], "allow_insecure_http": False}))
+            args = usage.build_parser().parse_args(["configure", "--config", str(path), "--pin", "1234"])
+            with patch.object(usage, "request_json", return_value={"ok": True, "reboot_required": False}) as request:
+                usage.run_configure(args)
+        self.assertEqual(request.call_args.args[0], "https://wroom.local/api/config")
+        self.assertEqual(request.call_args.kwargs["body"], {"version": 1, "screens": [{"type": "gc9a01_240", "provider": "claude"}]})
+
+    def test_config_push_selects_mapped_provider_and_reboot_blocks_credentials(self) -> None:
+        config = {"version": 1, "device": {"base_url": "https://wroom.local"}, "screens": [{"type": "gc9a01_240", "provider": "codex"}, {"type": "gc9a01_240", "provider": "codex"}], "allow_insecure_http": False}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "device.json"
+            path.write_text(json.dumps(config))
+            args = usage.build_parser().parse_args(["push", "--config", str(path), "--pin", "1234"])
+            codex_read = patch.object(usage.PROVIDERS["codex"], "read_credentials", return_value={"access_token": "token", "account_id": "id"})
+            cursor_read = patch.object(usage.PROVIDERS["cursor"], "read_credentials")
+            with patch.object(usage, "request_json", return_value={"ok": True, "reboot_required": False}), codex_read as codex, cursor_read as cursor, patch.object(usage, "push_http"):
+                usage.run_push(args)
+            codex.assert_called_once()
+            cursor.assert_not_called()
+
+            reboot_args = usage.build_parser().parse_args(["push", "--config", str(path), "--pin", "1234"])
+            with patch.object(usage, "request_json", return_value={"ok": True, "reboot_required": True}), patch.object(usage, "load_credentials") as credentials:
+                with self.assertRaisesRegex(usage.UsageError, "reboot the device"):
+                    usage.run_push(reboot_args)
+            credentials.assert_not_called()
+
+    def test_config_watch_posts_before_credential_loading(self) -> None:
+        config = {"version": 1, "device": {"base_url": "https://wroom.local"}, "screens": [{"type": "gc9a01_240", "provider": "codex"}], "allow_insecure_http": False}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "device.json"
+            path.write_text(json.dumps(config))
+            args = usage.build_parser().parse_args(["watch", "--config", str(path), "--pin", "1234", "--interval", "1"])
+            with patch.object(usage, "request_json", return_value={"ok": True, "reboot_required": True}), patch.object(usage, "load_credentials") as credentials:
+                with self.assertRaisesRegex(usage.UsageError, "reboot the device"):
+                    usage.run_watch(args)
+            credentials.assert_not_called()
 
 
 if __name__ == "__main__":

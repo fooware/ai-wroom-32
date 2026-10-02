@@ -25,6 +25,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from device_config import ConfigError, config_payload, load_config, wizard
+
 
 CURSOR_USAGE_URL = "https://cursor.com/api/usage-summary"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
@@ -428,7 +430,7 @@ def erase_wifi_nvs(port: Path, baud: int) -> None:
             f"failed to erase Wi-Fi NVS on {port} (exit {error.returncode})"
         ) from error
     print(
-        f"Wi-Fi credentials erased on {port}. After reset, join the AIOM- SoftAP "
+        f"Wi-Fi and screen configuration erased on {port}. After reset, join the AIOM- SoftAP "
         "and provision again with ESP SoftAP Prov (proof of possession = PIN)."
     )
 
@@ -445,11 +447,37 @@ def selected_providers(value: str) -> list[str]:
     return names
 
 
+def configured_device(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Load once so watch uses a stable screen-to-provider mapping."""
+    if not getattr(args, "config", None):
+        return None
+    if getattr(args, "providers", None) is not None:
+        raise UsageError("--providers cannot be used with --config")
+    cached = getattr(args, "_device_config", None)
+    if cached is not None:
+        return cached
+    try:
+        cached = load_config(args.config.expanduser())
+    except ConfigError as error:
+        raise UsageError(f"invalid device configuration: {error}") from None
+    args._device_config = cached
+    return cached
+
+
+def configured_provider_names(args: argparse.Namespace) -> list[str]:
+    config = configured_device(args)
+    if config is not None:
+        # Dict order preserves the screen order while making duplicate screens
+        # share one local credential read and one payload provider entry.
+        return list(dict.fromkeys(screen["provider"] for screen in config["screens"]))
+    return args.providers if args.providers is not None else ["codex", "cursor"]
+
+
 def load_credentials(args: argparse.Namespace) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     """Load every requested credential independently, retaining healthy entries."""
     credentials: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
-    for name in args.providers:
+    for name in configured_provider_names(args):
         try:
             credentials[name] = PROVIDERS[name].read_credentials(args)
         except UsageError:
@@ -607,6 +635,10 @@ def run_print(args: argparse.Namespace) -> None:
 
 
 def run_push(args: argparse.Namespace) -> None:
+    validate_target(args)
+    config = configured_device(args)
+    if config is not None:
+        post_device_config(args, config)
     credentials, errors = load_credentials(args)
     if not credentials:
         raise UsageError("no selected provider credentials are available")
@@ -654,7 +686,48 @@ def provision(args: argparse.Namespace, payload: dict[str, Any]) -> None:
         push_http(args.url, payload, device_token, args.allow_insecure_http)
 
 
+def device_token(args: argparse.Namespace, action: str) -> str:
+    token = args.pin or (
+        os.environ.get(args.device_token_env) if args.device_token_env else None
+    )
+    if not token:
+        raise UsageError(f"HTTP {action} requires --pin or AI_WROOM_DEVICE_TOKEN")
+    return token
+
+
+def post_device_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    """Apply display layout before credentials; a reboot must happen first."""
+    base_url = config["device"]["base_url"]
+    response = request_json(
+        f"{base_url}/api/config",
+        method="POST",
+        headers={"Authorization": f"Bearer {device_token(args, 'configuration')}"},
+        body=config_payload(config),
+    )
+    if response.get("ok") is not True:
+        raise UsageError("device configuration was not accepted")
+    if response.get("reboot_required") is True:
+        raise UsageError(
+            "device configuration saved; reboot the device, re-read its PIN, then push credentials"
+        )
+    print("device configuration applied")
+
+
+def run_configure(args: argparse.Namespace) -> None:
+    config = configured_device(args)
+    assert config is not None
+    post_device_config(args, config)
+
+
+def run_config_wizard(args: argparse.Namespace) -> None:
+    wizard(args.output.expanduser())
+
+
 def run_watch(args: argparse.Namespace) -> None:
+    validate_target(args)
+    config = configured_device(args)
+    if config is not None:
+        post_device_config(args, config)
     previous_fingerprint: str | None = None
     last_push = 0.0
     while True:
@@ -682,7 +755,7 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--providers",
         type=selected_providers,
-        default=["codex", "cursor"],
+        default=None,
         help="comma-separated providers (default: codex,cursor)",
     )
     parser.add_argument(
@@ -702,10 +775,15 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="Claude Code OAuth JSON file (default: macOS Keychain)",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="saved device screen configuration",
+    )
 
 
 def add_push_arguments(parser: argparse.ArgumentParser) -> None:
-    target = parser.add_mutually_exclusive_group(required=True)
+    target = parser.add_mutually_exclusive_group()
     target.add_argument("--url", help="ESP32 credential endpoint URL")
     target.add_argument("--serial", type=Path, help="ESP32 serial device")
     parser.add_argument("--baud", type=int, default=115200)
@@ -724,6 +802,18 @@ def add_push_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="allow account credentials to cross the LAN without TLS",
     )
+
+
+def validate_target(args: argparse.Namespace) -> None:
+    if getattr(args, "config", None):
+        if getattr(args, "url", None) or getattr(args, "serial", None):
+            raise UsageError("--config cannot be combined with --url or --serial")
+        config = configured_device(args)
+        assert config is not None
+        args.url = f"{config['device']['base_url']}/api/credentials"
+        args.allow_insecure_http = config["allow_insecure_http"]
+    elif not getattr(args, "url", None) and not getattr(args, "serial", None):
+        raise UsageError("one of --url, --serial, or --config is required")
 
 
 def positive_interval(value: str) -> float:
@@ -766,6 +856,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="push every interval, useful after unattended ESP32 restarts",
     )
     watch.set_defaults(handler=run_watch)
+
+    configure = subparsers.add_parser(
+        "configure", help="apply saved screen configuration to the ESP32"
+    )
+    configure.add_argument("--config", type=Path, required=True, help="saved device screen configuration")
+    configure.add_argument("--pin", type=pairing_pin, help="four-digit pairing PIN shown on the ESP32")
+    configure.add_argument("--device-token-env", default="AI_WROOM_DEVICE_TOKEN")
+    configure.set_defaults(handler=run_configure, providers=None)
+
+    config_command = subparsers.add_parser("config", help="create or manage device configuration")
+    config_subparsers = config_command.add_subparsers(dest="config_command", required=True)
+    config_wizard = config_subparsers.add_parser("wizard", help="create a secret-free device configuration")
+    config_wizard.add_argument("--output", type=Path, required=True, help="new configuration file path")
+    config_wizard.set_defaults(handler=run_config_wizard)
 
     wifi_reset = subparsers.add_parser(
         "wifi-reset",
