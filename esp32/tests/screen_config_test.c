@@ -44,6 +44,7 @@ static void test_parse_counts(void) {
   assert(screen_config_parse("{\"version\":1,\"screens\":[{\"type\":\"gc9a01_240\",\"provider\":\"codex\"}]}", &out) == ESP_OK && out.count == 1);
   assert(screen_config_parse("{\"version\":1,\"screens\":[{\"type\":\"gc9a01_240\",\"provider\":\"codex\"},{\"type\":\"gc9a01_240\",\"provider\":\"cursor\"}]}", &out) == ESP_OK && out.count == 2);
   assert(screen_config_parse("{\"version\":1,\"screens\":[{\"type\":\"gc9a01_240\",\"provider\":\"codex\"},{\"type\":\"gc9a01_240\",\"provider\":\"cursor\"},{\"type\":\"gc9a01_240\",\"provider\":\"claude\"}]}", &out) == ESP_OK && out.count == 3);
+  assert(screen_config_parse("{\"version\":1,\"screens\":[{\"type\":\"gc9a01_240\",\"provider\":\"codex\"},{\"type\":\"gc9b72_360\",\"provider\":\"cursor\"}]}", &out) == ESP_OK && out.count == 2 && out.screens[1].type == 1);
 }
 static void test_invalid_input_and_wiring(void) {
   screen_config_t out;

@@ -7,6 +7,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_gc9a01.h"
+#include "gc9b72.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
@@ -62,23 +63,27 @@ static void cleanup(display_instance_t *instances, size_t count, bool lvgl_initi
   if (bus_initialized) spi_bus_free(LCD_HOST);
 }
 
-static esp_err_t add_gc9a01(const screen_type_t *type, const screen_pins_t *pins,
+static esp_err_t add_panel(const screen_type_t *type, const screen_pins_t *pins,
                             display_instance_t *instance) {
   esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(pins->cs, screen_dc(), NULL, NULL);
   io_config.pclk_hz = LCD_SPI_HZ;
   ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &instance->io),
                       TAG, "new SPI IO");
+  const bool gc9b72 = strcmp(type->id, "gc9b72_360") == 0;
   const esp_lcd_panel_dev_config_t panel_config = {
       .reset_gpio_num = -1, /* reset_panels() handles individual and shared reset lines once. */
-      .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
+      .rgb_ele_order = gc9b72 ? LCD_RGB_ELEMENT_ORDER_RGB : LCD_RGB_ELEMENT_ORDER_BGR,
       .bits_per_pixel = 16,
   };
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_gc9a01(instance->io, &panel_config, &instance->panel), TAG,
-                      "new GC9A01 panel");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(instance->panel), TAG, "GC9A01 software reset");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_init(instance->panel), TAG, "GC9A01 init");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(instance->panel, true), TAG, "GC9A01 invert");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(instance->panel, true), TAG, "GC9A01 on");
+  /* Profiles preserve the existing GC9A01 orientation while matching the
+   * GC9B72 reference sequence's RGB order and unmirrored coordinates. */
+  esp_err_t err = gc9b72 ? esp_lcd_new_panel_gc9b72(instance->io, &panel_config, &instance->panel)
+                        : esp_lcd_new_panel_gc9a01(instance->io, &panel_config, &instance->panel);
+  ESP_RETURN_ON_ERROR(err, TAG, "new panel");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(instance->panel), TAG, "software reset");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_init(instance->panel), TAG, "panel init");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(instance->panel, !gc9b72), TAG, "panel invert");
+  ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(instance->panel, true), TAG, "panel on");
 
   const uint32_t partial_pixels = type->width * LVGL_BUF_LINES;
   /* LVGL draws into PSRAM when available; the port copies each partial strip
@@ -94,7 +99,7 @@ static esp_err_t add_gc9a01(const screen_type_t *type, const screen_pins_t *pins
       .vres = type->height,
       .monochrome = false,
       .color_format = LV_COLOR_FORMAT_RGB565,
-      .rotation = {.swap_xy = false, .mirror_x = true, .mirror_y = false},
+      .rotation = {.swap_xy = false, .mirror_x = !gc9b72, .mirror_y = false},
       .flags = {.buff_dma = !psram, .buff_spiram = psram, .swap_bytes = true},
   };
   instance->display = lvgl_port_add_disp(&display_config);
@@ -113,7 +118,7 @@ esp_err_t displays_init(const screen_config_t *config, lv_display_t **out) {
   size_t max_width = 0;
   for (size_t i = 0; i < config->count; ++i) {
     const screen_type_t *type = screen_type(config->screens[i].type);
-    if (!type || config->screens[i].type != 0) {
+    if (!type) {
       ESP_LOGE(TAG, "screen %u uses an unsupported controller", (unsigned)(i + 1));
       return ESP_ERR_NOT_SUPPORTED;
     }
@@ -133,7 +138,7 @@ esp_err_t displays_init(const screen_config_t *config, lv_display_t **out) {
   if (err != ESP_OK) goto fail;
   lvgl_initialized = true;
   for (size_t i = 0; i < config->count; ++i) {
-    err = add_gc9a01(screen_type(config->screens[i].type), screen_pins(i), &instances[i]);
+    err = add_panel(screen_type(config->screens[i].type), screen_pins(i), &instances[i]);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "screen %u initialization failed (%s)", (unsigned)(i + 1), esp_err_to_name(err));
       goto fail;

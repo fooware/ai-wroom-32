@@ -26,6 +26,15 @@ def valid_config() -> dict:
 
 
 class DeviceConfigTests(unittest.TestCase):
+    def test_mixed_screen_types_survive_saved_configuration(self) -> None:
+        config = valid_config()
+        config["screens"].append({"type": "gc9b72_360", "provider": "claude"})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mixed.json"
+            device_config.save_config(path, config)
+            self.assertEqual(device_config.load_config(path)["screens"], config["screens"])
+            self.assertEqual(device_config.config_payload(config)["screens"], config["screens"])
+
     def test_load_normalizes_known_api_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "device.json"
